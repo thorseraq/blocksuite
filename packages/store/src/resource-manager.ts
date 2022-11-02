@@ -1,3 +1,5 @@
+import { group } from 'console';
+import { YArray, YText } from 'yjs/dist/src/internals';
 import { BaseBlockModel, IBaseBlockProps } from './base';
 import type { Store } from './store';
 
@@ -15,16 +17,18 @@ type ResourceData = {
 
 type ResourceIDString = `res${string}`;
 
-/** Some binary blob */
-interface IResourceRef {
-  readonly resourceID: ResourceIDString;
-  /** Can this be accessed via web to get this */
-  webURLAccess(options?: { baseURL?: string }): Promise<URL>;
-}
+// Is this actually necessary?
+// Maybe just take the data alone
+// /** Some binary blob */
+// interface IResourceRef {
+//   readonly resourceID: ResourceIDString;
+//   /** Can this be accessed via web to get this */
+//   getWebURL(options?: { baseURL?: string }): Promise<URL>;
+// }
 
 interface IBinaryBlobWebURLProvider {
   /** Could be a base64 datauri, a object URL, or an external URL */
-  getBlobWebURL(resourceID: ResourceIDString): Promise<URL>;
+  getBlobWebURL(resourceID: ResourceIDString): Promise<{ href: URL }>;
 }
 
 type todo<T> = unknown;
@@ -37,11 +41,24 @@ interface IBinaryBlobStorageDevice {
   getBlobDebugInfo(
     resourceID: ResourceIDString
   ): Promise<Record<string, unknown>>;
-  /** Store binary blob under resource ID */
-  setBlob(
-    resourceID: ResourceIDString,
+  // If we are using content hash location, then should we prevent
+  // setting on a specific hash?
+  // /** Store binary blob under resource ID */
+  // setBlob(
+  //   resourceID: ResourceIDString,
+  //   data: TodoInputBinaryData
+  // ): Promise<void>;
+
+  // releaseBlob(
+  //  id: ResourceIDString,
+  //  // useCaseKey: // some kind of associated key for usage site? Thinking about GC / releasing blobs
+  // )
+
+  /** Store new binary blob under resource ID */
+  createBlob(
     data: TodoInputBinaryData
-  ): Promise<void>;
+    // useCaseKey: // some kind of associated key for usage site? Thinking about GC / releasing blobs
+  ): Promise<ResourceIDString>;
 }
 
 type IndexedDBBlobStorageOptions = {
@@ -49,63 +66,25 @@ type IndexedDBBlobStorageOptions = {
   databaseName: string;
 };
 
-class IndexedDBBlobStorage
-  implements IBinaryBlobWebURLProvider, IBinaryBlobStorageDevice
-{
+interface IBlobStorage
+  extends IBinaryBlobWebURLProvider,
+    IBinaryBlobStorageDevice {}
+
+class IndexedDBBlobStorage implements IBlobStorage {
   public readonly version: number;
   public readonly databaseName: string;
   private assets: Record<string, unknown>;
-  private db = makeErrObject('db not initialized');
+  private db: Promise<IDBDatabase>;
   private constructor(options: Partial<IndexedDBBlobStorageOptions> = {}) {
     this.version = options.version || 1;
     this.databaseName = options.databaseName || 'blobstorage';
     this.assets = {};
-  }
-  static create(
-    options: Partial<IndexedDBBlobStorageOptions> = {}
-  ): Promise<IndexedDBBlobStorage> {
-    const uninit = new IndexedDBBlobStorage(options);
-    return new Promise<IndexedDBBlobStorage>((resolve, reject) => {
-      /** refactor? can we use a better short-circuit? */
-      let rejected = false;
-      const request = indexedDB.open(uninit.databaseName, uninit.version);
-
-      request.onupgradeneeded = event => {
-        const upgradeNeededEventTarget = event.target;
-        if (upgradeNeededEventTarget instanceof IDBOpenDBRequest) {
-          upgradeNeededEventTarget.result.createObjectStore('cache');
-        } else {
-          rejected = true;
-          reject(
-            new Error(
-              'internal: upgradeNeededEventTarget is not IDBOpenDBRequest'
-            )
-          );
-        }
-      };
-
-      request.onsuccess = () => {
-        if (rejected) return;
-        uninit.db = request.result;
-
-        uninit.db.onerror = () => {
-          rejected = true;
-          reject(new Error('internal: error creating/accessing db'));
-        };
-
-        if (uninit.db.setVersion && uninit.db.version !== uninit.version) {
-          const version = uninit.db.setVersion(uninit.version);
-          version.onsuccess = () => {
-            if (rejected) return;
-            uninit.db.createObjectStore('cache');
-            resolve(uninit);
-          };
-        } else {
-          resolve(uninit);
-        }
-      };
+    this.db = createDB({
+      databaseName: this.databaseName,
+      version: this.version,
     });
   }
+
   setBlob(
     resourceID: ResourceIDString,
     data: TodoInputBinaryData
@@ -123,12 +102,58 @@ class IndexedDBBlobStorage
   }
 }
 
+function createDB(options: IndexedDBBlobStorageOptions): Promise<IDBDatabase> {
+  return new Promise<IndexedDBBlobStorage>((resolve, reject) => {
+    /** refactor? can we use a better short-circuit? */
+    let rejected = false;
+    const request = indexedDB.open(
+      options.databaseName ?? 'defaultdb',
+      options.version ?? 1
+    );
+
+    request.onupgradeneeded = event => {
+      const upgradeNeededEventTarget = event.target;
+      if (upgradeNeededEventTarget instanceof IDBOpenDBRequest) {
+        upgradeNeededEventTarget.result.createObjectStore('cache');
+      } else {
+        rejected = true;
+        reject(
+          new Error(
+            'internal: upgradeNeededEventTarget is not IDBOpenDBRequest'
+          )
+        );
+      }
+    };
+
+    request.onsuccess = () => {
+      if (rejected) return;
+      const db = request.result;
+
+      db.onerror = () => {
+        rejected = true;
+        reject(new Error('internal: error creating/accessing db'));
+      };
+
+      if (db.setVersion && db.version !== options.version) {
+        const version = db.setVersion(options.version);
+        version.onsuccess = () => {
+          if (rejected) return;
+          db.createObjectStore('cache');
+          resolve(db);
+        };
+      } else {
+        resolve(db);
+      }
+    };
+  });
+}
+
 class BinaryBlobResourceRef implements IResourceRef {
   constructor(
     private readonly blobProvider: IBinaryBlobWebURLProvider,
     public readonly resourceID: ResourceIDString
   ) {}
-  async webURLAccess(options?: { baseURL?: string }): Promise<URL> {
+  async getWebURL(options?: { baseURL?: string }): Promise<URL> {
     return this.blobProvider.getBlobWebURL(this.resourceID);
   }
 }
@@ -136,37 +161,6 @@ class BinaryBlobResourceRef implements IResourceRef {
 // interface Provider {
 //   // ...
 // }
-
-export class ResourceManager {
-  private _provider: Provider;
-  private readonly _store: Store;
-  private readonly _resources: Map<string, ResourceData>;
-
-  constructor(store: Store) {
-    this._store = store;
-    this._resources = new Map();
-  }
-
-  get store() {
-    return this._store;
-  }
-
-  get resources() {
-    return this._resources;
-  }
-
-  addResource(resource: ResourceData) {
-    this._resources.set(resource.id, resource);
-  }
-
-  getResource(id: string) {
-    return this._resources.get(id);
-  }
-
-  removeResource(id: string) {
-    this._resources.delete(id);
-  }
-}
 
 export interface ImageBlockProps extends IBaseBlockProps {
   flavour: 'image';
@@ -183,8 +177,37 @@ export class ImageBlockModel extends BaseBlockModel implements ImageBlockProps {
   }
 }
 
-const store: any = null!;
+class UnbornBlockRef {}
 
-// const resourceManager =
-store.connect(resourceManager);
-store.addBlock({ flavour: 'image', resource });
+const store: {
+  blobStorage: IBlobStorage;
+  addBlock(...args: any): UnbornBlockRef;
+  getBlockCreated(unborn: UnbornBlockRef): null | BlockId;
+} = null!;
+
+const ImageModel = defineModel({
+  width: number(),
+  height: number(),
+  caption: string(),
+  resource: blob().optional(),
+});
+
+const schema = {
+  image: ImageModel,
+};
+
+store.register(schema);
+store.connect(blobStorage);
+
+const id = store.addBlock({ flavour: 'image', resource: image }, groupModel);
+
+// inside image block
+
+const blobRef = await store.blobStorage.createBlob(
+  'https://example.com/image.png'
+);
+
+// image: blob URL
+const image = store.blobStorage.getBlobWebURL(imageModel.resource); // string
+// lit html
+// <img src=${image} />

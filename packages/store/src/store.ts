@@ -150,6 +150,18 @@ export class Store {
     this._history.clear();
   }
 
+  /**
+   * Be able to intentionally group multiple operations in one history event for undos.
+   *
+   * This is not so widely used, because Yjs underlying history manager
+   * uses timeouts to group operations together.
+   *
+   * The fact that Yjs already merges these operations has the benefit of ensuring
+   * that the transmitted operations are compacted (as opposed to sending every individual
+   * keystroke as a separate `{ insert: "a" }`).
+   *
+   * See related {@link Store.captureSync}.
+   */
   transact(fn: () => void) {
     this.doc.transact(fn, this.doc.clientID);
   }
@@ -536,3 +548,6 @@ export class Store {
     return yDocToJSXNode(json.blocks, id);
   }
 }
+
+// const store = new Store();
+// store.doc.load();
