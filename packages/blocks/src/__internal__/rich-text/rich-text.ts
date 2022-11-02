@@ -62,6 +62,73 @@ export class RichText extends LitElement {
         },
       },
     });
+    this.quill.on('text-change', delta => {
+      // only length is 2 need to be handled
+      let selector = '';
+      // only length is 2 need to be handled
+      if (delta.ops[1]?.attributes?.code) {
+        selector = 'code';
+      }
+      if (delta.ops[1]?.attributes?.link) {
+        selector = 'link-node';
+      }
+      if (delta.ops.length === 2 && delta.ops[1]?.insert && selector) {
+        const retain = delta.ops[0].retain;
+        if (retain !== undefined) {
+          const currentLeaf = this.quill.getLeaf(
+            retain + Number(delta.ops[1]?.insert.toString().length)
+          );
+          const nextLeaf = this.quill.getLeaf(
+            retain + Number(delta.ops[1]?.insert.toString().length) + 1
+          );
+          const currentParentElement = currentLeaf[0]?.domNode?.parentElement;
+          const currentEmbedElement = currentParentElement?.closest(selector);
+          const nextParentElement = nextLeaf[0]?.domNode?.parentElement;
+          const nextEmbedElement = nextParentElement?.closest(selector);
+          const insertedString = delta.ops[1]?.insert.toString();
+          if (nextEmbedElement && nextEmbedElement !== currentEmbedElement) {
+            this.quill.deleteText(
+              retain,
+              delta.ops[1]?.insert.toString().length
+            );
+            // @ts-ignore
+            if (!this.host.isCompositionStart) {
+              this.quill.insertText(
+                retain,
+                delta.ops[1]?.insert.toString() || ''
+              );
+            } else {
+              // FIXME we must add a noon width space to fix cursor
+              this.quill.insertEmbed(retain, 'text', ' ');
+              this.quill.setSelection(retain + 1, 0, 'api');
+            }
+          }
+          if (!nextEmbedElement && insertedString) {
+            this.quill.deleteText(
+              retain,
+              delta.ops[1]?.insert.toString().length
+            );
+            this.quill.insertEmbed(
+              retain,
+              'text',
+              // @ts-ignore
+              !this.host.isCompositionStart
+                ? delta.ops[1]?.insert.toString() || ''
+                : // FIXME we must add a noon width space to fix cursor
+                  ' '
+            );
+            this.quill.setSelection(
+              retain +
+                // @ts-ignore
+                (!this.host.isCompositionStart ? insertedString.length : 1),
+              0,
+              'api'
+            );
+          }
+        }
+      }
+      // });
+    });
     store.attachRichText(model.id, this.quill);
     store.awareness.updateLocalCursor();
 

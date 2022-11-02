@@ -30,7 +30,7 @@ import {
 } from '../utils';
 
 export interface DefaultPageSignals {
-  updateSelectionRect: Signal<DOMRect | null>;
+  updateFrameSelectionRect: Signal<DOMRect | null>;
   updateSelectedRects: Signal<DOMRect[]>;
 }
 
@@ -42,7 +42,7 @@ function focusTextEnd(input: HTMLInputElement) {
   input.value = current;
 }
 
-function SelectionRect(rect: DOMRect | null) {
+function FrameSelectionRect(rect: DOMRect | null) {
   if (rect === null) return html``;
 
   const style = {
@@ -53,14 +53,17 @@ function SelectionRect(rect: DOMRect | null) {
   };
   return html`
     <style>
-      .affine-page-selection-rect {
-        position: fixed;
+      .affine-page-frame-selection-rect {
+        position: absolute;
         background: var(--affine-selected-color);
         z-index: 1;
         pointer-events: none;
       }
     </style>
-    <div class="affine-page-selection-rect" style=${styleMap(style)}></div>
+    <div
+      class="affine-page-frame-selection-rect"
+      style=${styleMap(style)}
+    ></div>
   `;
 }
 
@@ -109,17 +112,19 @@ export class DefaultPageBlockComponent extends LitElement implements BlockHost {
   mouseRoot!: HTMLElement;
 
   @state()
-  selectionRect: DOMRect | null = null;
+  frameSelectionRect: DOMRect | null = null;
 
   @state()
   selectedRects: DOMRect[] = [];
 
   signals: DefaultPageSignals = {
-    updateSelectionRect: new Signal<DOMRect | null>(),
+    updateFrameSelectionRect: new Signal<DOMRect | null>(),
     updateSelectedRects: new Signal<DOMRect[]>(),
   };
 
   private _scrollDisposable!: Disposable;
+
+  public isCompositionStart = false;
 
   @property({
     hasChanged() {
@@ -310,6 +315,14 @@ export class DefaultPageBlockComponent extends LitElement implements BlockHost {
     super.update(changedProperties);
   }
 
+  private _handleCompositionStart = () => {
+    this.isCompositionStart = true;
+  };
+
+  private _handleCompositionEnd = () => {
+    this.isCompositionStart = false;
+  };
+
   firstUpdated() {
     this._bindHotkeys();
     hotkey.enableHotkey();
@@ -320,8 +333,8 @@ export class DefaultPageBlockComponent extends LitElement implements BlockHost {
       }
     });
 
-    this.signals.updateSelectionRect.on(rect => {
-      this.selectionRect = rect;
+    this.signals.updateFrameSelectionRect.on(rect => {
+      this.frameSelectionRect = rect;
       this.requestUpdate();
     });
     this.signals.updateSelectedRects.on(rects => {
@@ -341,6 +354,8 @@ export class DefaultPageBlockComponent extends LitElement implements BlockHost {
     ) as HTMLDivElement;
     const scrollSignal = Signal.fromEvent(scrollContainer, 'scroll');
     this._scrollDisposable = scrollSignal.on(() => this._clearSelection());
+    window.addEventListener('compositionstart', this._handleCompositionStart);
+    window.addEventListener('compositionend', this._handleCompositionEnd);
 
     focusTextEnd(this._title);
   }
@@ -349,13 +364,18 @@ export class DefaultPageBlockComponent extends LitElement implements BlockHost {
     this._removeHotkeys();
     this._scrollDisposable.dispose();
     this.selection.dispose();
+    window.removeEventListener(
+      'compositionstart',
+      this._handleCompositionStart
+    );
+    window.removeEventListener('compositionend', this._handleCompositionEnd);
   }
 
   render() {
     this.setAttribute(BLOCK_ID_ATTR, this.model.id);
 
     const childrenContainer = BlockChildrenContainer(this.model, this);
-    const selectionRect = SelectionRect(this.selectionRect);
+    const selectionRect = FrameSelectionRect(this.frameSelectionRect);
     const selectedRectsContainer = SelectedRectsContainer(this.selectedRects);
 
     return html`
