@@ -85,25 +85,28 @@ class IndexedDBBlobStorage implements IBlobStorage {
     });
   }
 
-  setBlob(
+  async setBlob(
     resourceID: ResourceIDString,
     data: TodoInputBinaryData
   ): Promise<void> {
+    const db = await this.db;
     throw new Error('setBlob not implemented');
   }
-  getBlobDebugInfo(
+  async getBlobDebugInfo(
     resourceID: ResourceIDString
   ): Promise<Record<string, unknown>> {
+    const db = await this.db;
     throw new Error('getBlobDebugInfo not implemented');
   }
   /** Pull out an object URL for the specified ResourceIDString as key. */
-  getBlobWebURL(resourceID: ResourceIDString): Promise<URL> {
+  async getBlobWebURL(resourceID: ResourceIDString): Promise<{ href: URL }> {
+    const db = await this.db;
     throw new Error('getBlobWebURL not implemented');
   }
 }
 
 function createDB(options: IndexedDBBlobStorageOptions): Promise<IDBDatabase> {
-  return new Promise<IndexedDBBlobStorage>((resolve, reject) => {
+  return new Promise<IDBDatabase>((resolve, reject) => {
     /** refactor? can we use a better short-circuit? */
     let rejected = false;
     const request = indexedDB.open(
@@ -134,7 +137,7 @@ function createDB(options: IndexedDBBlobStorageOptions): Promise<IDBDatabase> {
         reject(new Error('internal: error creating/accessing db'));
       };
 
-      if (db.setVersion && db.version !== options.version) {
+      if (db.version !== options.version) {
         const version = db.setVersion(options.version);
         version.onsuccess = () => {
           if (rejected) return;
