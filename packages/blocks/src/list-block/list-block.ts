@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { LitElement, html, css, unsafeCSS } from 'lit';
+import { ref } from 'lit/directives/ref.js';
 import { customElement, property } from 'lit/decorators.js';
 import { BLOCK_ID_ATTR, BlockHost } from '../__internal__';
 
@@ -35,6 +36,18 @@ export class ListBlockComponent extends LitElement {
     this.model.childrenUpdated.on(() => this.requestUpdate());
   }
 
+  getImageSrc = applyOnEachChanged(
+    (resID: `res${string}`): Promise<null | string> => {
+      if (resID === null) {
+        return Promise.resolve(null);
+      } else {
+        return this.host.store.blobStorage
+          .getWebURL(resID)
+          .then(url => url.toString());
+      }
+    }
+  );
+
   render() {
     this.setAttribute(BLOCK_ID_ATTR, this.model.id);
     const { deep, index } = getListInfo(this.host, this.model);
@@ -60,6 +73,16 @@ export class ListBlockComponent extends LitElement {
           shouldAddMarginTop ? 'affine-list-block-container--first' : ''
         }`}
       >
+        <!-- EXAMPLE Image element with resource -->
+        <img
+          ${ref(
+            img =>
+              img instanceof HTMLImageElement &&
+              this.getImageSrc(this.model.resource).then(url => {
+                img.src = url ?? '';
+              })
+          )}
+        />
         <div
           class=${`affine-list-rich-text-wrapper ${
             this.model.checked ? 'affine-list--checked' : ''
@@ -78,4 +101,21 @@ declare global {
   interface HTMLElementTagNameMap {
     'list-block': ListBlockComponent;
   }
+}
+
+const NOT_INVOKED = Symbol();
+function applyOnEachChanged<T extends string | number | null | undefined, R>(
+  fn: (arg: T) => R
+): (arg: T) => R {
+  let res: R | typeof NOT_INVOKED = NOT_INVOKED;
+  let prev: T | typeof NOT_INVOKED = NOT_INVOKED;
+  return (arg: T) => {
+    if (prev !== arg) {
+      // re-calc
+      prev = arg;
+      res = fn(prev);
+    }
+
+    return res as R;
+  };
 }

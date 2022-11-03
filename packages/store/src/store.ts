@@ -3,6 +3,8 @@ import { Awareness } from 'y-protocols/awareness.js';
 import * as Y from 'yjs';
 import type { SyncProvider, SyncProviderConstructor } from './providers';
 import { serializeYDoc, yDocToJSXNode } from './utils/jsx';
+import type { BlobStorage } from './blob-storage';
+import { MirroredBlobStorage } from './blob-storage';
 
 export interface SerializedStore {
   page0: {
@@ -13,6 +15,8 @@ export interface SerializedStore {
 export interface StoreOptions {
   room?: string;
   providers?: SyncProviderConstructor[];
+  // Idea: These are all mirrored to
+  storages?: BlobStorage[];
   awareness?: Awareness;
 }
 
@@ -21,11 +25,14 @@ const DEFAULT_ROOM = 'virgo-default';
 export class Store {
   readonly doc = new Y.Doc();
   readonly providers: SyncProvider[] = [];
+  /** Use to create any binary resources */
+  readonly blobStorage: BlobStorage;
   readonly spaces = new Map<string, Space>();
 
   constructor({
     room = DEFAULT_ROOM,
     providers = [],
+    storages = [],
     awareness,
   }: StoreOptions = {}) {
     const aware = awareness ?? new Awareness(this.doc);
@@ -33,6 +40,7 @@ export class Store {
       ProviderConstructor =>
         new ProviderConstructor(room, this.doc, { awareness: aware })
     );
+    this.blobStorage = new MirroredBlobStorage({ mirroredTo: storages });
 
     // FIXME
     this.spaces.set('page0', new Space(this.doc, aware));
