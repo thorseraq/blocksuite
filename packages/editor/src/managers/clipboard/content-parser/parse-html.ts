@@ -49,6 +49,15 @@ export class ParserHtml {
   }
   // TODO parse children block
   private _nodePaser(node: Element): OpenBlockInfo[] | null {
+    // if (node.tagName === 'IMG') {
+    //   return [{
+    //     flavour: 'affine:embed',
+    //     type: 'image',
+    //     sourceId: 0,
+    //     text: [],
+    //     children: [],
+    //   }];
+    // }
     let result;
     // custom parser
     result =

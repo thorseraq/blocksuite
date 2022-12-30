@@ -70,9 +70,9 @@ export function syncBlockProps(
     // TODO use schema
     if (key === 'text') return;
 
-    if (!isPrimitive(props[key])) {
-      throw new Error('Only top level primitives are supported for now');
-    }
+    // if (!isPrimitive(props[key])) {
+    //   throw new Error('Only top level primitives are supported for now');
+    // }
 
     // TODO compare with current yBlock value
     if (props[key] !== undefined) {

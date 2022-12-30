@@ -102,6 +102,12 @@ export const basic = (workspace: Workspace) => {
       },
       groupId
     );
+    // page.addBlock(          {
+    //   flavour: 'affine:embed',
+    //   type: 'image',
+    //   sourceId: 0,
+    //   children: [],
+    // }, groupId);
     page.resetHistory();
   });
 

@@ -100,6 +100,7 @@ export class ContentParser {
     };
     marked.use({ extensions: [underline] });
     const md2html = marked.parse(text);
+    // console.log(md2html);
     return this.htmlText2Block(md2html);
   }
 
@@ -188,6 +189,7 @@ export class ContentParser {
   private _convertHtml2Blocks(element: Element): OpenBlockInfo[] {
     return Array.from(element.children)
       .map(childElement => {
+        // console.log(childElement);
         const clipBlockInfos =
           this.getParserHtmlText2Block('nodeParser')?.(childElement) || [];
 
