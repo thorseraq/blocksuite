@@ -257,7 +257,7 @@ export class DragHandle extends LitElement {
       x,
       y,
       this._cursor,
-      5,
+      20,
       false,
       true
     );

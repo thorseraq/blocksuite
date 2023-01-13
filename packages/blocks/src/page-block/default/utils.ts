@@ -185,24 +185,35 @@ function binarySearchBlockEditingState(
             if (block.depth) {
               let depth = Math.floor((blockRect.left - x) / 26);
               if (depth > 0) {
-                assertExists(block.parentIndex);
+                if (!block.parentIndex) {
+                  return {
+                    index: mid,
+                    position: blockRect,
+                    model: block,
+                  };
+                }
                 let result = getBlockAndRect(blocks, block.parentIndex);
+                let targetIndex = block.parentIndex;
 
                 while (depth > 1 && result.block.depth) {
-                  assertExists(result.block.parentIndex);
-                  result = getBlockAndRect(blocks, result.block.parentIndex);
+                  const parentIndex = result.block.parentIndex;
+                  if (!parentIndex) {
+                    break;
+                  }
+                  result = getBlockAndRect(blocks, parentIndex);
                   depth -= 1;
+                  targetIndex = parentIndex;
                 }
 
                 return {
-                  index: mid,
+                  index: targetIndex,
                   position: result.blockRect,
                   model: result.block,
                 };
               }
             }
           } else {
-            if (x < detectRect.left || x > detectRect.left + detectRect.width) {
+            if (x < detectRect.left || x > detectRect.right) {
               return null;
             }
           }
@@ -226,7 +237,15 @@ function binarySearchBlockEditingState(
   return null;
 }
 
-function getBlockAndRect(blocks: BaseBlockModel[], mid: number) {
+function getBlockAndRect(
+  blocks: BaseBlockModel[],
+  mid: number
+): {
+  block: BaseBlockModel;
+  hoverDom: HTMLElement;
+  blockRect: DOMRect;
+  detectRect: DOMRect;
+} {
   const block = blocks[mid];
   const hoverDom = getBlockById(block.id);
   assertExists(hoverDom);
