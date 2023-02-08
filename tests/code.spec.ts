@@ -86,6 +86,29 @@ test('use shortcut can create code block', async ({ page }) => {
   await expect(locator).toBeVisible();
 });
 
+test('change code language can work', async ({ page }) => {
+  await enterPlaygroundRoom(page);
+  await initEmptyCodeBlockState(page);
+  await focusRichText(page);
+
+  const position = await page.evaluate(() => {
+    const codeBlock = document.querySelector('affine-code');
+    const bbox = codeBlock?.getBoundingClientRect() as DOMRect;
+    return {
+      x: bbox.left + bbox.width / 2,
+      y: bbox.top + bbox.height / 2,
+    };
+  });
+
+  await page.mouse.move(position.x, position.y);
+
+  const codeLangSelector = '.lang-container > code-block-button:nth-child(1)';
+  await page.click(codeLangSelector);
+  const locator = page.locator('.lang-list-button-container');
+  await expect(locator).toBeVisible();
+  await assertKeyboardWorkInInput(page, page.locator('#filter-input'));
+});
+
 test('language select list can disappear when click other place', async ({
   page,
 }) => {
