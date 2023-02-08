@@ -107,6 +107,12 @@ test('change code language can work', async ({ page }) => {
   const locator = page.locator('.lang-list-button-container');
   await expect(locator).toBeVisible();
   await assertKeyboardWorkInInput(page, page.locator('#filter-input'));
+
+  await type(page, 'rust');
+  await page.click(
+    '.lang-list-button-container > code-block-button:nth-child(1)'
+  );
+  await expect(locator).toBeHidden();
 });
 
 test('language select list can disappear when click other place', async ({
