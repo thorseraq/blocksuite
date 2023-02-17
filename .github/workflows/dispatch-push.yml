@@ -1,4 +1,4 @@
-name: push
+name: dispatch_push
 
 on:
   workflow_dispatch:
@@ -9,8 +9,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
-      - name: Install dependencies with pnpm
-        run: pnpm install
+
       - name: Commit changes
         run: |
           git config --global user.email "you@example.com"
