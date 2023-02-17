@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  install:
+  dispatch_push:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -22,3 +22,6 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: demo
+      - name: log test
+        run: |
+          echo "aaa"
