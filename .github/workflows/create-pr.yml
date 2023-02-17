@@ -9,7 +9,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-        ref: 0213-fix-code-block
+        with:
+          ref: 0213-fix-code-block
 
       - name: Create pull request
         id: create-pr
