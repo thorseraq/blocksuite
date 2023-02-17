@@ -17,11 +17,12 @@ jobs:
           touch demo.txt
           git add .
           git commit -m "Update dependencies with pnpm"
+      - name: log test
+        run: |
+          echo "aaa"
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: demo
-      - name: log test
-        run: |
-          echo "aaa"
+          force: true
