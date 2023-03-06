@@ -6,6 +6,7 @@ import { BaseBlockModel, DisposableGroup } from '@blocksuite/store';
 
 import {
   BlockComponentElement,
+  getBlockByPoint2,
   getBlockElementByModel,
   getCurrentNativeRange,
   getDefaultPageBlock,
@@ -298,11 +299,27 @@ export class DefaultSelectionManager {
 
   private _onContainerMouseMove = (e: SelectionEvent) => {
     this.state.refreshBlockRectCache();
-    const hoverEditingState = getBlockEditingStateByPosition(
-      this._selectableBlocks,
-      e.raw.clientX,
-      e.raw.clientY
+
+    const { viewport } = this.state;
+    const blockContainer = this._container.viewportElement.firstElementChild;
+    assertExists(blockContainer);
+    const { left, width } = blockContainer.getBoundingClientRect();
+    const { clientHeight, top } = viewport;
+    const hoverEditingState = getBlockByPoint2(
+      new Point(e.raw.clientX, e.raw.clientY),
+      Rect.fromLWTH(
+        left,
+        width,
+        top,
+        Math.min(clientHeight, window.innerHeight)
+      )
     );
+
+    // const hoverEditingState = getBlockEditingStateByPosition(
+    //   this._selectableBlocks,
+    //   e.raw.clientX,
+    //   e.raw.clientY
+    // );
     if ((e.raw.target as HTMLElement).closest('.embed-editing-state')) return;
 
     this._container.components.dragHandle?.onContainerMouseMove(e);
