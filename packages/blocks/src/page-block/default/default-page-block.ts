@@ -21,6 +21,7 @@ import {
   hasNativeSelection,
   hotkey,
   isMultiBlockRange,
+  Rect,
   SelectionPosition,
 } from '../../__internal__/index.js';
 import { getService } from '../../__internal__/service.js';
@@ -159,6 +160,9 @@ export class DefaultPageBlockComponent
   @query('.affine-default-viewport')
   viewportElement!: HTMLDivElement;
 
+  @query('.affine-default-page-block-container')
+  pageBlockContainer!: HTMLDivElement;
+
   slots: DefaultSelectionSlots = {
     draggingAreaUpdated: new Slot<DOMRect | null>(),
     selectedRectsUpdated: new Slot<DOMRect[]>(),
@@ -174,6 +178,17 @@ export class DefaultPageBlockComponent
   get titleVEditor() {
     assertExists(this._titleVEditor);
     return this._titleVEditor;
+  }
+
+  getInnerRect() {
+    const { left, width } = this.pageBlockContainer.getBoundingClientRect();
+    const { clientHeight, top } = this.selection.state.viewport;
+    return Rect.fromLWTH(
+      left,
+      Math.min(width, window.innerWidth),
+      top,
+      Math.min(clientHeight, window.innerHeight)
+    );
   }
 
   private _initTitleVEditor() {
