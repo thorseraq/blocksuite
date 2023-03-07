@@ -39,7 +39,6 @@ import type {
   EmbedEditingState,
 } from '../default-page-block.js';
 import {
-  EditingState,
   getAllowSelectedBlocks,
   getBlockEditingStateByPosition,
 } from '../utils.js';
