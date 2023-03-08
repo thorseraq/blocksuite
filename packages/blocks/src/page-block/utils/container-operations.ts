@@ -29,10 +29,6 @@ import {
   getBlockElementByModel,
   getRichTextByModel,
 } from '../../__internal__/utils/query.js';
-import {
-  getCurrentNativeRange,
-  resetNativeSelection,
-} from '../../__internal__/utils/selection.js';
 import type { BlockSchema } from '../../models.js';
 import type { DefaultSelectionManager } from '../default/selection-manager/index.js';
 
@@ -406,19 +402,11 @@ export function handleSelectAll(selection: DefaultSelectionManager) {
     selection.state.selectedBlocks.length === 0 &&
     currentSelection?.focusNode?.nodeName === '#text'
   ) {
-    const blockElement = getClosestBlockElementByElement(
-      currentSelection.focusNode.parentElement
+    selection.selectOneBlock(
+      getClosestBlockElementByElement(currentSelection.focusNode.parentElement)
     );
-    selection.selectOneBlockElement(blockElement);
-    // const currentRange = getCurrentNativeRange();
-    // const rangeRect = currentRange.getBoundingClientRect();
-    // selection.selectBlocksByRect(rangeRect);
   } else {
-    // const LARGE_BOUND = 999999;
-    // const rect = new DOMRect(0, 0, LARGE_BOUND, LARGE_BOUND);
-    // selection.state.focusedBlockIndex = -1; // SELECT_ALL
-    // selection.selectBlocksByRect(rect);
-    selection.selectAllBlockElements();
+    selection.selectAllBlocks();
   }
 
   resetNativeSelection(null);
