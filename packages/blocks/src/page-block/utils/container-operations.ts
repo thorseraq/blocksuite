@@ -15,6 +15,7 @@ import {
   hasNativeSelection,
   isCollapsedNativeSelection,
   isMultiBlockRange,
+  resetNativeSelection,
   TopLevelBlockModel,
 } from '../../__internal__/index.js';
 import type { AffineTextAttributes } from '../../__internal__/rich-text/virgo/types.js';
