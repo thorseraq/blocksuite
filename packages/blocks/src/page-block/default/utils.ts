@@ -12,9 +12,10 @@ import {
   doesInSamePath,
   getBlockById,
   getBlockElementByModel,
-  getClosestBlockElementByPointInStrictMode,
+  getClosestBlockElementByPoint,
   getRichTextByModel,
   OpenBlockInfo,
+  Point,
 } from '../../__internal__/utils/index.js';
 import { DragHandle } from '../../components/index.js';
 import { toast } from '../../components/toast.js';
@@ -580,10 +581,9 @@ export function createDragHandle(defaultPageBlock: DefaultPageBlockComponent) {
       defaultPageBlock.selection.clear();
     },
     getClosestBlockElement(point: Point) {
-      return getClosestBlockElementByPointInStrictMode(
+      return getClosestBlockElementByPoint(
         point,
-        defaultPageBlock.getInnerRect(),
-        true
+        defaultPageBlock.getInnerRect()
       );
     },
   });
