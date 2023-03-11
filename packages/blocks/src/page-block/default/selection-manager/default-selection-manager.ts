@@ -306,6 +306,7 @@ export class DefaultSelectionManager {
     );
 
     if (!element) {
+      this._container.components.dragHandle?.onContainerMouseMove(e, null);
       return;
     }
 
