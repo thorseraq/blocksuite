@@ -1,287 +1,451 @@
 import '../__internal__/rich-text/rich-text.js';
+import '../components/portal.js';
+import './components/code-option.js';
+import './components/lang-list.js';
 
-import { ArrowDownIcon, BLOCK_ID_ATTR } from '@blocksuite/global/config';
-import { css, html } from 'lit';
-import { customElement, property, query, state } from 'lit/decorators.js';
+import { ArrowDownIcon } from '@blocksuite/global/config';
+import { BlockElement } from '@blocksuite/lit';
+import { assertExists, Slot } from '@blocksuite/store';
+import { css, html, render } from 'lit';
+import { customElement, state } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
+import { styleMap } from 'lit/directives/style-map.js';
+import {
+  getHighlighter,
+  type Highlighter,
+  type ILanguageRegistration,
+  type Lang,
+} from 'shiki';
+import { z } from 'zod';
 
 import {
-  BlockChildrenContainer,
-  BlockHost,
-  getDefaultPageBlock,
-  NonShadowLitElement,
+  clamp,
+  getViewportElement,
+  queryCurrentMode,
 } from '../__internal__/index.js';
-import { toolTipStyle } from '../components/tooltip/tooltip.js';
+import type { AffineTextSchema } from '../__internal__/rich-text/virgo/types.js';
+import { getService, registerService } from '../__internal__/service.js';
+import { listenToThemeChange } from '../__internal__/theme/utils.js';
+import { tooltipStyle } from '../components/tooltip/tooltip.js';
 import type { CodeBlockModel } from './code-model.js';
+import { CodeBlockService } from './code-service.js';
+import { CodeOptionTemplate } from './components/code-option.js';
+import { getStandardLanguage } from './utils/code-languages.js';
+import { getCodeLineRenderer } from './utils/code-line-renderer.js';
+import { DARK_THEME, FALLBACK_LANG, LIGHT_THEME } from './utils/consts.js';
 
 @customElement('affine-code')
-export class CodeBlockComponent extends NonShadowLitElement {
-  static styles = css`
-    //<editor-fold desc="highlight.js/styles/color-brewer.css">
-    pre code.hljs {
-      display: block;
-      overflow-x: auto;
-      padding: 1em;
-    }
-
-    code.hljs {
-      padding: 3px 5px;
-    }
-
-    .hljs {
-      color: #000;
-      background: #fff;
-    }
-
-    .hljs-addition,
-    .hljs-meta,
-    .hljs-string,
-    .hljs-symbol,
-    .hljs-template-tag,
-    .hljs-template-variable {
-      color: #756bb1;
-    }
-
-    .hljs-comment,
-    .hljs-quote {
-      color: #636363;
-    }
-
-    .hljs-bullet,
-    .hljs-link,
-    .hljs-literal,
-    .hljs-number,
-    .hljs-regexp {
-      color: #31a354;
-    }
-
-    .hljs-deletion,
-    .hljs-variable {
-      color: #88f;
-    }
-
-    .hljs-built_in,
-    .hljs-doctag,
-    .hljs-keyword,
-    .hljs-name,
-    .hljs-section,
-    .hljs-selector-class,
-    .hljs-selector-id,
-    .hljs-selector-tag,
-    .hljs-strong,
-    .hljs-tag,
-    .hljs-title,
-    .hljs-type {
-      color: #3182bd;
-    }
-
-    .hljs-emphasis {
-      font-style: italic;
-    }
-
-    .hljs-attribute {
-      color: #e6550d;
-    }
-
+export class CodeBlockComponent extends BlockElement<CodeBlockModel> {
+  static override styles = css`
     code-block {
       position: relative;
       z-index: 1;
     }
 
     .affine-code-block-container {
-      font-size: var(--affine-font-xs);
+      font-size: var(--affine-font-sm);
       line-height: var(--affine-line-height);
       position: relative;
-      padding: 32px 0;
-      background: var(--affine-code-block-background);
+      padding: 32px 0px 12px 0px;
+      background: var(--affine-background-code-block);
       border-radius: 10px;
       margin-top: calc(var(--affine-paragraph-space) + 8px);
       margin-bottom: calc(var(--affine-paragraph-space) + 8px);
     }
 
-    .affine-code-block-container pre {
+    /* hover area */
+    .affine-code-block-container::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 50px;
+      height: 100%;
+      transform: translateX(100%);
+    }
+
+    /* hover area */
+    .affine-code-block-container::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 50px;
+      height: 100%;
+      transform: translateX(100%);
+    }
+
+    .affine-code-block-container .virgo-editor {
       font-family: var(--affine-font-code-family);
       font-variant-ligatures: none;
     }
 
-    .affine-code-block-container .container {
+    .affine-code-block-container .lang-list-wrapper {
       position: absolute;
-      font-size: var(--affine-font-xs);
+      font-size: var(--affine-font-sm);
       line-height: var(--affine-line-height);
       top: 12px;
       left: 12px;
     }
 
-    .affine-code-block-container.selected {
-      background-color: var(--affine-selected-color);
+    .affine-code-block-container > .lang-list-wrapper {
+      visibility: hidden;
+    }
+    .affine-code-block-container:hover > .lang-list-wrapper {
+      visibility: visible;
+    }
+
+    .affine-code-block-container > .lang-list-wrapper > .lang-button {
+      display: flex;
+      justify-content: flex-start;
+      padding: 0 8px;
     }
 
     .affine-code-block-container rich-text {
+      /* to make sure the resize observer can be triggered as expected */
+      display: block;
       position: relative;
+      width: 90%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-bottom: 20px;
     }
 
-    #line-number {
+    .affine-code-block-container .rich-text-container {
+      position: relative;
+      border-radius: 5px;
+      padding: 4px 12px 4px 60px;
+    }
+
+    #line-numbers {
       position: absolute;
       text-align: right;
-      top: 5.4px;
+      left: 20px;
       line-height: var(--affine-line-height);
-      color: var(--affine-line-number-color);
+      color: var(--affine-text-secondary-color);
     }
 
-    .affine-code-block-container .ql-container {
-      left: 40px;
-      border-radius: 5px;
-      padding: 2px 12px;
-    }
-
-    .affine-code-block-container .ql-syntax {
-      width: 620px;
+    .affine-code-block-container .virgo-editor {
+      width: 90%;
       margin: 0;
-      overflow-x: auto;
-      /*scrollbar-color: #fff0 #fff0;*/
     }
 
-    .affine-code-block-container .ql-syntax::-webkit-scrollbar {
-      /*background: none;*/
+    .affine-code-block-container affine-code-line span v-text {
+      display: inline;
     }
 
-    .affine-code-block-container .wrap {
-      white-space: pre-wrap;
+    .affine-code-block-container affine-code-line span {
+      white-space: pre;
     }
 
-    .code-block-option .filled {
-      fill: var(--affine-primary-color);
+    .affine-code-block-container.wrap #line-numbers {
+      top: calc(var(--affine-line-height) + 4px);
     }
 
-    .lang-container {
-      line-height: var(--affine-line-height);
-      text-align: justify;
-      position: relative;
+    .affine-code-block-container.wrap #line-numbers > div {
+      margin-top: calc(
+        var(--top, 0) / var(--affine-zoom, 1) - var(--affine-line-height)
+      );
     }
 
-    .lang-container code-block-button {
-      padding: 4px 0 0 12px;
-      justify-content: flex-start;
+    .affine-code-block-container.wrap v-line > div {
+      display: block;
+    }
+
+    .affine-code-block-container.wrap affine-code-line span {
+      white-space: break-spaces;
+    }
+
+    .affine-code-block-container .virgo-editor::-webkit-scrollbar {
+      display: none;
     }
 
     .code-block-option {
-      box-shadow: 0 1px 10px -6px rgba(24, 39, 75, 0.08),
-        0 3px 16px -6px rgba(24, 39, 75, 0.04);
-      border-radius: 10px;
+      box-shadow: var(--affine-shadow-2);
+      border-radius: 8px;
       list-style: none;
       padding: 4px;
       width: 40px;
-      background-color: var(--affine-page-background);
+      background-color: var(--affine-background-overlay-panel-color);
       margin: 0;
     }
 
-    .code-block-option {
-      /*fill: #6880ff;*/
-    }
-
-    .clicked {
-      color: var(--affine-primary-color) !important;
-      background: var(--affine-hover-background) !important;
-    }
-
-    ${toolTipStyle}
+    ${tooltipStyle}
   `;
 
-  @property({ hasChanged: () => true })
-  model!: CodeBlockModel;
-
-  @property()
-  host!: BlockHost;
-
-  @query('.lang-container')
-  langContainerElement!: HTMLElement;
-
-  @query('lang-list')
-  langListElement!: HTMLElement;
+  @state()
+  private _showLangList = false;
 
   @state()
-  showLangList = 'hidden';
+  private _optionPosition: { x: number; y: number } | null = null;
 
   @state()
-  disposeTimer = 0;
+  private _wrap = false;
 
-  @state()
-  filterText = '';
+  readonly textSchema: AffineTextSchema = {
+    attributesSchema: z.object({}),
+    textRenderer: () =>
+      getCodeLineRenderer(() => ({
+        lang: this.model.language.toLowerCase() as Lang,
+        highlighter: this._highlighter,
+      })),
+  };
 
-  get highlight() {
-    const service = this.host.getService(this.model.flavour);
-    return service.hljs.default.highlight;
+  private _richTextResizeObserver: ResizeObserver = new ResizeObserver(() => {
+    this._updateLineNumbers();
+  });
+
+  private _curLanguageDisplayName: string = FALLBACK_LANG;
+  private _highlighter: Highlighter | null = null;
+  private async _startHighlight(lang: ILanguageRegistration) {
+    const mode = queryCurrentMode();
+    this._highlighter = await getHighlighter({
+      theme: mode === 'dark' ? DARK_THEME : LIGHT_THEME,
+      themes: [LIGHT_THEME, DARK_THEME],
+      langs: [lang],
+      paths: {
+        // TODO: use local path
+        wasm: 'https://cdn.jsdelivr.net/npm/shiki/dist',
+        themes: 'https://cdn.jsdelivr.net/',
+        languages: 'https://cdn.jsdelivr.net/npm/shiki/languages',
+      },
+    });
+
+    const richText = this.querySelector('rich-text');
+    assertExists(richText);
+    const vEditor = richText.vEditor;
+    assertExists(vEditor);
+    const range = vEditor.getVRange();
+    vEditor.requestUpdate();
+    if (range) {
+      vEditor.setVRange(range);
+    }
   }
 
-  firstUpdated() {
-    this.model.propsUpdated.on(() => this.requestUpdate());
-    this.model.childrenUpdated.on(() => this.requestUpdate());
+  get readonly() {
+    return this.model.page.readonly;
   }
 
-  private _onClick() {
-    this.showLangList = this.showLangList === 'visible' ? 'hidden' : 'visible';
-  }
+  hoverState = new Slot<boolean>();
 
-  render() {
-    const page = getDefaultPageBlock(this.model);
-    const codeBlockOption = page?.codeBlockOption;
-    const boundingClientRect = this.getBoundingClientRect();
-    // when there are multiple code blocks, decide whether mouse is hovering on the current code block
-    const isHovering = codeBlockOption
-      ? codeBlockOption.position.y + boundingClientRect.height >
-          boundingClientRect.top &&
-        codeBlockOption.position.y < boundingClientRect.bottom
-      : false;
-    const childrenContainer = BlockChildrenContainer(
-      this.model,
-      this.host,
-      () => this.requestUpdate()
+  override connectedCallback() {
+    super.connectedCallback();
+    registerService('affine:code', CodeBlockService);
+    this._disposables.add(
+      this.model.propsUpdated.on(() => this.requestUpdate())
     );
-    this.setAttribute(BLOCK_ID_ATTR, this.model.id);
-    return html`
-      <div class="affine-code-block-container">
-        ${isHovering || this.showLangList !== 'hidden'
-          ? html` <div class="container">
-              <div class="lang-container" @click=${this._onClick}>
-                <code-block-button
-                  width="101px"
-                  height="24px"
-                  fontSize="14px"
-                  class="${this.showLangList === 'hidden' ? '' : 'clicked'}"
-                >
-                  ${this.model.language} ${ArrowDownIcon}
-                </code-block-button>
-              </div>
-              <lang-list
-                showLangList=${this.showLangList}
-                id=${this.model.id}
-                @selected-language-changed=${(e: CustomEvent) => {
-                  this.host
-                    .getService('affine:code')
-                    .setLang(this.model, e.detail.language);
-                }}
-                @dispose=${() => {
-                  this.showLangList = 'hidden';
-                }}
-              ></lang-list>
-            </div>`
-          : html``}
-        <rich-text
-          .host=${this.host}
-          .model=${this.model}
-          .modules=${{
-            syntax: {
-              highlight: this.highlight,
-              codeBlockElement: this,
-              language: this.model.language,
-            },
-          }}
-        >
-          <div id="line-number"></div>
-        </rich-text>
-        ${childrenContainer}
-      </div>
-    `;
+    this._disposables.add(
+      this.model.childrenUpdated.on(() => this.requestUpdate())
+    );
+
+    this._disposables.add(
+      listenToThemeChange(this, async () => {
+        if (!this._highlighter) return;
+        const richText = this.querySelector('rich-text');
+        const vEditor = richText?.vEditor;
+        if (!vEditor) return;
+
+        // update code-line theme
+        setTimeout(() => {
+          vEditor.requestUpdate();
+        });
+      })
+    );
+
+    this._observePosition();
   }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this.hoverState.dispose();
+    this._richTextResizeObserver.disconnect();
+  }
+
+  override updated() {
+    if (this.model.language !== this._curLanguageDisplayName) {
+      const lang = getStandardLanguage(this.model.language);
+      this._curLanguageDisplayName = lang
+        ? lang.displayName ?? lang.id
+        : FALLBACK_LANG;
+      if (lang) {
+        if (this._highlighter) {
+          const currentLangs = this._highlighter.getLoadedLanguages();
+          if (!currentLangs.includes(lang.id as Lang)) {
+            this._highlighter.loadLanguage(lang).then(() => {
+              const richText = this.querySelector('rich-text');
+              const vEditor = richText?.vEditor;
+              if (vEditor) {
+                vEditor.requestUpdate();
+              }
+            });
+          }
+        } else {
+          this._startHighlight(lang);
+        }
+      } else {
+        this._highlighter = null;
+      }
+
+      const richText = this.querySelector('rich-text');
+      const vEditor = richText?.vEditor;
+      if (vEditor) {
+        vEditor.requestUpdate();
+      }
+    }
+
+    const richText = this.querySelector('rich-text');
+    assertExists(richText);
+    this._richTextResizeObserver.disconnect();
+    this._richTextResizeObserver.observe(richText);
+  }
+
+  private _onClickWrapBtn() {
+    const container = this.querySelector('.affine-code-block-container');
+    assertExists(container);
+    this._wrap = container.classList.toggle('wrap');
+  }
+
+  private _observePosition() {
+    // At AFFiNE, avoid the option element to be covered by the header
+    // we need to reserve the space for the header
+    const HEADER_HEIGHT = 64;
+    // The height of the option element
+    // You need to change this value manually if you change the style of the option element
+    const OPTION_ELEMENT_HEIGHT = 96;
+    const TOP_EDGE = 10;
+    const LEFT_EDGE = 12;
+
+    let timer: number;
+    const updatePosition = () => {
+      // Update option position when scrolling
+      const rect = this.getBoundingClientRect();
+      this._optionPosition = {
+        x: rect.right + LEFT_EDGE,
+        y: clamp(
+          rect.top + TOP_EDGE,
+          Math.min(
+            HEADER_HEIGHT + LEFT_EDGE,
+            rect.bottom - OPTION_ELEMENT_HEIGHT - TOP_EDGE
+          ),
+          rect.bottom - OPTION_ELEMENT_HEIGHT - TOP_EDGE
+        ),
+      };
+    };
+    this.hoverState.on(hover => {
+      clearTimeout(timer);
+      if (hover) {
+        updatePosition();
+        return;
+      }
+      timer = window.setTimeout(() => {
+        this._optionPosition = null;
+      }, HOVER_DELAY);
+    });
+    this._disposables.addFromEvent(this, 'mouseover', e => {
+      this.hoverState.emit(true);
+    });
+    const HOVER_DELAY = 300;
+    this._disposables.addFromEvent(this, 'mouseleave', e => {
+      this.hoverState.emit(false);
+    });
+
+    const viewportElement = getViewportElement(this.model.page);
+    if (viewportElement) {
+      this._disposables.addFromEvent(viewportElement, 'scroll', e => {
+        if (!this._optionPosition) return;
+        updatePosition();
+      });
+    }
+  }
+
+  private _onClickLangBtn() {
+    if (this.readonly) return;
+    this._showLangList = !this._showLangList;
+  }
+
+  private _langListTemplate() {
+    return html`<div
+      class="lang-list-wrapper"
+      style="${this._showLangList ? 'visibility: visible;' : ''}"
+    >
+      <icon-button
+        class="lang-button"
+        data-testid="lang-button"
+        width="auto"
+        height="24px"
+        ?hover=${this._showLangList}
+        ?disabled=${this.readonly}
+        @click=${this._onClickLangBtn}
+      >
+        ${this._curLanguageDisplayName}
+        ${!this.readonly ? ArrowDownIcon : html``}
+      </icon-button>
+      ${this._showLangList
+        ? html`<lang-list
+            @selected-language-changed=${(e: CustomEvent) => {
+              getService('affine:code').setLang(this.model, e.detail.language);
+              this._showLangList = false;
+            }}
+            @dispose=${() => {
+              this._showLangList = false;
+            }}
+          ></lang-list>`
+        : ''}
+    </div>`;
+  }
+
+  private _codeOptionTemplate() {
+    if (!this._optionPosition) return '';
+    return html`<affine-portal
+      .template=${CodeOptionTemplate({
+        model: this.model,
+        position: this._optionPosition,
+        hoverState: this.hoverState,
+        wrap: this._wrap,
+        onClickWrap: () => this._onClickWrapBtn(),
+      })}
+    ></affine-portal>`;
+  }
+
+  private _updateLineNumbers() {
+    const lineNumbersContainer =
+      this.querySelector<HTMLElement>('#line-numbers');
+    assertExists(lineNumbersContainer);
+
+    const next = this._wrap ? generateLineNumberRender() : lineNumberRender;
+
+    render(
+      repeat(Array.from(this.querySelectorAll('v-line')), next),
+      lineNumbersContainer
+    );
+  }
+
+  override render() {
+    return html`<div class="affine-code-block-container">
+        ${this._langListTemplate()}
+        <div class="rich-text-container">
+          <div id="line-numbers"></div>
+          <rich-text .model=${this.model} .textSchema=${this.textSchema}>
+          </rich-text>
+        </div>
+        ${this.content}
+      </div>
+      ${this._codeOptionTemplate()}`;
+  }
+}
+
+function generateLineNumberRender(top = 0) {
+  return function lineNumberRender(e: HTMLElement, index: number) {
+    const style = {
+      '--top': `${top}px`,
+    };
+    top = e.getBoundingClientRect().height;
+    return html`<div style=${styleMap(style)}>${index + 1}</div>`;
+  };
+}
+
+function lineNumberRender(_: HTMLElement, index: number) {
+  return html`<div>${index + 1}</div>`;
 }
 
 declare global {

@@ -1,4 +1,4 @@
-import { AbstractType, Array, Doc, Map, Text } from 'yjs';
+import * as Y from 'yjs';
 
 import type { PrefixedBlockProps } from '../workspace/page.js';
 
@@ -30,13 +30,13 @@ function isValidRecord(data: unknown): data is DocRecord {
   return true;
 }
 
-const IGNORE_PROPS = [
+const IGNORED_PROPS = [
   'sys:id',
   'sys:flavour',
   'sys:children',
   'prop:xywh',
-  'meta:tags',
-  'meta:tagSchema',
+  'prop:cells',
+  'prop:elements',
 ];
 
 export function yDocToJSXNode(
@@ -57,11 +57,23 @@ export function yDocToJSXNode(
   // TODO maybe need check children recursively nested
   const children = node['sys:children'];
   const props = Object.fromEntries(
-    Object.entries(node).filter(([key]) => !IGNORE_PROPS.includes(key))
+    Object.entries(node).filter(([key]) => !IGNORED_PROPS.includes(key))
   );
 
-  if ('prop:text' in props) {
+  if ('prop:text' in props && props['prop:text'] instanceof Array) {
     props['prop:text'] = parseDelta(props['prop:text'] as DeltaText);
+  }
+
+  if ('prop:title' in props && props['prop:title'] instanceof Array) {
+    props['prop:title'] = parseDelta(props['prop:title'] as DeltaText);
+  }
+
+  if ('prop:columns' in props && props['prop:columns'] instanceof Array) {
+    props['prop:columns'] = `Array [${props['prop:columns'].length}]`;
+  }
+
+  if ('prop:views' in props && props['prop:views'] instanceof Array) {
+    props['prop:views'] = `Array [${props['prop:views'].length}]`;
   }
 
   return {
@@ -72,10 +84,10 @@ export function yDocToJSXNode(
   };
 }
 
-export function serializeYDoc(doc: Doc) {
+export function serializeYDoc(doc: Y.Doc) {
   const json: Record<string, unknown> = {};
   doc.share.forEach((value, key) => {
-    if (value instanceof Map) {
+    if (value instanceof Y.Map) {
       json[key] = serializeYMap(value);
     } else {
       json[key] = value.toJSON();
@@ -84,20 +96,29 @@ export function serializeYDoc(doc: Doc) {
   return json;
 }
 
-function serializeYMap(map: Map<unknown>) {
+function serializeY(value: unknown): unknown {
+  if (value instanceof Y.Doc) {
+    return serializeYDoc(value);
+  }
+  if (value instanceof Y.Map) {
+    return serializeYMap(value);
+  }
+  if (value instanceof Y.Text) {
+    return serializeYText(value);
+  }
+  if (value instanceof Y.Array) {
+    return value.toArray().map(x => serializeY(x));
+  }
+  if (value instanceof Y.AbstractType) {
+    return value.toJSON();
+  }
+  return value;
+}
+
+function serializeYMap(map: Y.Map<unknown>) {
   const json: Record<string, unknown> = {};
   map.forEach((value, key) => {
-    if (value instanceof Map) {
-      json[key] = serializeYMap(value);
-    } else if (value instanceof Text) {
-      json[key] = serializeYText(value);
-    } else if (value instanceof Array) {
-      json[key] = value.toJSON();
-    } else if (value instanceof AbstractType) {
-      json[key] = value.toJSON();
-    } else {
-      json[key] = value;
-    }
+    json[key] = serializeY(value);
   });
   return json;
 }
@@ -107,7 +128,7 @@ type DeltaText = {
   attributes?: { [format: string]: unknown };
 }[];
 
-function serializeYText(text: Text): DeltaText {
+function serializeYText(text: Y.Text): DeltaText {
   const delta = text.toDelta();
   return delta;
 }

@@ -1,35 +1,36 @@
-import './button.js';
-import './format-bar-node.js';
+import type { Page } from '@blocksuite/store';
+import { matchFlavours, Slot } from '@blocksuite/store';
 
-import { Signal } from '@blocksuite/store';
-
-import {
-  getCurrentRange,
-  getDefaultPageBlock,
-  getModelsByRange,
-  throttle,
-} from '../../__internal__/utils/index.js';
+import { getCurrentBlockRange } from '../../__internal__/utils/block-range.js';
+import { throttle } from '../../__internal__/utils/common.js';
+import { getViewportElement } from '../../__internal__/utils/query.js';
+import { onModelElementUpdated } from '../../page-block/index.js';
 import {
   calcPositionPointByRange,
   calcSafeCoordinate,
-  DragDirection,
+  type DragDirection,
 } from '../../page-block/utils/position.js';
-import type { FormatQuickBar } from './format-bar-node.js';
+import { FormatQuickBar } from './format-bar-node.js';
+
+export { FormatQuickBar };
 
 let formatQuickBarInstance: FormatQuickBar | null = null;
 
-export const showFormatQuickBar = async ({
+export const showFormatQuickBar = ({
+  page,
   anchorEl,
   direction = 'right-bottom',
   container = document.body,
   abortController = new AbortController(),
 }: {
-  anchorEl?:
-    | {
-        getBoundingClientRect: () => DOMRect;
-        // contextElement?: Element;
-      }
-    | Range;
+  page: Page;
+  anchorEl: {
+    getBoundingClientRect: () => {
+      x: number;
+      y: number;
+    };
+    // contextElement?: Element;
+  };
   direction?: DragDirection;
   container?: HTMLElement;
   abortController?: AbortController;
@@ -41,11 +42,36 @@ export const showFormatQuickBar = async ({
 
   // Init format quick bar
 
-  const formatQuickBar = document.createElement('format-quick-bar');
+  const blockRange = getCurrentBlockRange(page);
+  if (!blockRange) {
+    return;
+  }
+  blockRange.models = blockRange.models.filter(model =>
+    matchFlavours(model, [
+      'affine:paragraph',
+      'affine:list',
+      'affine:code',
+      'affine:database',
+    ])
+  );
+  const models = blockRange.models;
+
+  if (models.length === 0) {
+    return;
+  }
+  if (
+    matchFlavours(models[0], ['affine:database']) &&
+    blockRange.type === 'Native'
+  ) {
+    return;
+  }
+
+  const formatQuickBar = new FormatQuickBar();
+  formatQuickBar.page = page;
+  formatQuickBar.models = models;
   formatQuickBar.abortController = abortController;
-  const positionUpdatedSignal = new Signal();
-  formatQuickBar.positionUpdated = positionUpdatedSignal;
-  formatQuickBar.direction = direction;
+  const positionUpdatedSlot = new Slot();
+  formatQuickBar.positionUpdated = positionUpdatedSlot;
 
   formatQuickBarInstance = formatQuickBar;
   abortController.signal.addEventListener('abort', () => {
@@ -56,13 +82,13 @@ export const showFormatQuickBar = async ({
 
   // Once performance problems occur, it can be mitigated increasing throttle limit
   const updatePos = throttle(() => {
-    const positioningEl = anchorEl ?? getCurrentRange();
-    const dir = formatQuickBar.direction;
-
+    if (abortController.signal.aborted) {
+      return;
+    }
     const positioningPoint =
-      positioningEl instanceof Range
-        ? calcPositionPointByRange(positioningEl, dir)
-        : positioningEl.getBoundingClientRect();
+      anchorEl instanceof Range
+        ? calcPositionPointByRange(anchorEl, direction)
+        : anchorEl.getBoundingClientRect();
 
     // TODO maybe use the editor container as the boundary rect to avoid the format bar being covered by other elements
     const boundaryRect = document.body.getBoundingClientRect();
@@ -70,7 +96,7 @@ export const showFormatQuickBar = async ({
       formatQuickBar.formatQuickBarElement.getBoundingClientRect();
     // Add offset to avoid the quick bar being covered by the window border
     const gapY = 5;
-    const isBottom = dir.includes('bottom');
+    const isBottom = direction.includes('bottom');
     const safeCoordinate = calcSafeCoordinate({
       positioningPoint,
       objRect: formatBarRect,
@@ -84,64 +110,44 @@ export const showFormatQuickBar = async ({
     formatQuickBar.top = `${safeCoordinate.y}px`;
   }, 10);
 
-  const models = getModelsByRange(getCurrentRange());
-  if (!models.length) {
-    return;
+  if (!page.root) {
+    throw new Error("Failed to get page's root element");
   }
-  const pageBlock = getDefaultPageBlock(models[0]);
-  const scrollContainer = pageBlock.defaultViewportElement;
-
+  const scrollContainer = getViewportElement(page);
   if (scrollContainer) {
     // Note: in edgeless mode, the scroll container is not exist!
     scrollContainer.addEventListener('scroll', updatePos, { passive: true });
   }
-  positionUpdatedSignal.on(updatePos);
+  positionUpdatedSlot.on(updatePos);
   window.addEventListener('resize', updatePos, { passive: true });
+
+  // Mount
+  container.appendChild(formatQuickBar);
 
   // Handle selection change
 
-  let isMouseDown = false;
-  const mouseDownHandler = () => {
-    isMouseDown = true;
-  };
-  const mouseUpHandler = () => {
-    isMouseDown = false;
-  };
-
-  const selectionChangeHandler = () => {
-    const selection = document.getSelection();
-    const selectNothing =
-      !selection || selection.type === 'Caret' || selection.type === 'None';
-    if (selectNothing || isMouseDown) {
-      abortController.abort();
+  const pointerDownHandler = (e: MouseEvent) => {
+    if (e.target === formatQuickBar) {
       return;
     }
-    updatePos();
+    abortController.abort();
   };
 
   const popstateHandler = () => {
     abortController.abort();
   };
-  document.addEventListener('mousedown', mouseDownHandler);
-  document.addEventListener('mouseup', mouseUpHandler);
-  document.addEventListener('selectionchange', selectionChangeHandler);
+  document.addEventListener('pointerdown', pointerDownHandler);
   // Fix https://github.com/toeverything/AFFiNE/issues/855
   window.addEventListener('popstate', popstateHandler);
 
-  // Mount
-  container.appendChild(formatQuickBar);
-  requestAnimationFrame(() => {
-    updatePos();
-  });
+  onModelElementUpdated(blockRange.models[0], updatePos);
 
   abortController.signal.addEventListener('abort', () => {
     scrollContainer?.removeEventListener('scroll', updatePos);
     window.removeEventListener('resize', updatePos);
-    document.removeEventListener('mousedown', mouseDownHandler);
-    document.removeEventListener('mouseup', mouseUpHandler);
-    document.removeEventListener('selectionchange', selectionChangeHandler);
+    document.removeEventListener('pointerdown', pointerDownHandler);
     window.removeEventListener('popstate', popstateHandler);
-    positionUpdatedSignal.dispose();
+    positionUpdatedSlot.dispose();
   });
   return formatQuickBar;
 };

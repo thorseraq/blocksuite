@@ -1,28 +1,46 @@
-import { matchFlavours } from '@blocksuite/global/utils';
+import { assertExists, matchFlavours } from '@blocksuite/global/utils';
 import type { Page } from '@blocksuite/store';
 import type { BaseBlockModel } from '@blocksuite/store';
-import type { Quill } from 'quill';
+import type { Workspace } from '@blocksuite/store';
+import type { VEditor, VRange } from '@blocksuite/virgo';
 
+import type { ListType } from '../../list-block/index.js';
+import { asyncGetRichTextByModel, getVirgoByModel } from './query.js';
 import type { ExtendedModel } from './types.js';
 
-// XXX: workaround quill lifecycle issue
-export async function asyncFocusRichText(page: Page, id: string) {
+export async function asyncSetVRange(model: BaseBlockModel, vRange: VRange) {
+  const richText = await asyncGetRichTextByModel(model);
+  richText?.vEditor?.setVRange(vRange);
+
   return new Promise<void>(resolve => {
-    requestAnimationFrame(() => {
-      const adapter = page.richTextAdapters.get(id);
-      adapter?.quill.focus();
+    richText?.vEditor?.slots.rangeUpdated.once(() => {
       resolve();
     });
   });
 }
 
-export function isCollapsedAtBlockStart(quill: Quill) {
-  return (
-    quill.getSelection(true)?.index === 0 && quill.getSelection()?.length === 0
-  );
+export function asyncFocusRichText(
+  page: Page,
+  id: string,
+  vRange: VRange = { index: 0, length: 0 }
+) {
+  const model = page.getBlockById(id);
+  assertExists(model);
+  if (matchFlavours(model, ['affine:divider'])) return;
+  return asyncSetVRange(model, vRange);
 }
 
-export function doesInSamePath(
+export function isCollapsedAtBlockStart(vEditor: VEditor) {
+  const vRange = vEditor.getVRange();
+  return vRange?.index === 0 && vRange?.length === 0;
+}
+
+export function isCollapsedAtBlockEnd(vEditor: VEditor) {
+  const vRange = vEditor.getVRange();
+  return vRange?.index === vEditor.yText.length && vRange?.length === 0;
+}
+
+export function isInSamePath(
   page: Page,
   children: BaseBlockModel,
   father: BaseBlockModel
@@ -45,7 +63,7 @@ export function doesInSamePath(
 export function convertToList(
   page: Page,
   model: ExtendedModel,
-  listType: 'bulleted' | 'numbered' | 'todo',
+  listType: ListType,
   prefix: string,
   otherProperties?: Record<string, unknown>
 ): boolean {
@@ -62,7 +80,6 @@ export function convertToList(
 
     model.text?.delete(0, prefix.length + 1);
     const blockProps = {
-      flavour: 'affine:list',
       type: listType,
       text: model.text?.clone(),
       children: model.children,
@@ -70,7 +87,7 @@ export function convertToList(
     };
     page.deleteBlock(model);
 
-    const id = page.addBlock(blockProps, parent, index);
+    const id = page.addBlock('affine:list', blockProps, parent, index);
     asyncFocusRichText(page, id);
   } else if (
     matchFlavours(model, ['affine:list']) &&
@@ -81,6 +98,7 @@ export function convertToList(
 
     model.text?.delete(0, prefix.length + 1);
     page.updateBlock(model, { type: listType });
+    asyncFocusRichText(page, model.id);
   }
   return true;
 }
@@ -104,14 +122,13 @@ export function convertToParagraph(
 
     model.text?.delete(0, prefix.length + 1);
     const blockProps = {
-      flavour: 'affine:paragraph',
       type: type,
       text: model.text?.clone(),
       children: model.children,
     };
     page.deleteBlock(model);
 
-    const id = page.addBlock(blockProps, parent, index);
+    const id = page.addBlock('affine:paragraph', blockProps, parent, index);
     asyncFocusRichText(page, id);
   } else if (
     matchFlavours(model, ['affine:paragraph']) &&
@@ -121,6 +138,13 @@ export function convertToParagraph(
     page.captureSync();
 
     model.text?.delete(0, prefix.length + 1);
+    const vEditor = getVirgoByModel(model);
+    if (vEditor) {
+      vEditor.setVRange({
+        index: 0,
+        length: 0,
+      });
+    }
     page.updateBlock(model, { type: type });
   }
   return true;
@@ -144,13 +168,37 @@ export function convertToDivider(
 
     model.text?.delete(0, prefix.length + 1);
     const blockProps = {
-      flavour: 'affine:divider',
       children: model.children,
     };
     // space.deleteBlock(model);
-    page.addBlock(blockProps, parent, index);
-    const id = page.id;
-    asyncFocusRichText(page, id);
+    page.addBlock('affine:divider', blockProps, parent, index);
+
+    const nextBlock = parent.children[index + 1];
+    if (nextBlock) {
+      asyncFocusRichText(page, nextBlock.id);
+    } else {
+      const nextId = page.addBlock('affine:paragraph', {}, parent);
+      asyncFocusRichText(page, nextId);
+    }
   }
   return true;
+}
+
+export async function createPage(
+  workspace: Workspace,
+  options: { id?: string; title?: string } = {}
+) {
+  const page = workspace.createPage({ id: options.id });
+  await page.waitForLoaded();
+
+  const pageBlockId = page.addBlock('affine:page', {
+    title: new page.Text(options.title ?? ''),
+  });
+  page.addBlock('affine:surface', {}, pageBlockId);
+  const noteId = page.addBlock('affine:note', {}, pageBlockId);
+  page.addBlock('affine:paragraph', {}, noteId);
+  // To make sure the content of new page would not be clear
+  // By undo operation for the first time
+  page.resetHistory();
+  return page;
 }

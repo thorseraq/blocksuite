@@ -1,19 +1,21 @@
+import type { PointerEventState } from '@blocksuite/block-std';
 import { caretRangeFromPoint } from '@blocksuite/global/utils';
 
 import {
   clamp,
-  getCurrentRange,
+  getCurrentNativeRange,
+  hasNativeSelection,
   isMultiLineRange,
   resetNativeSelection,
-  SelectionEvent,
 } from '../../__internal__/index.js';
-import { isAtLineEdge } from '../../__internal__/rich-text/rich-text-operations.js';
+import { isAtLineEdge } from '../../__internal__/utils/check-line.js';
+import type { PageSelectionState } from '../default/selection-manager/index.js';
 
-export function repairContextMenuRange(e: SelectionEvent) {
+export function repairContextMenuRange(e: MouseEvent) {
   const selection = window.getSelection() as Selection;
   const currentRange =
     selection && selection.rangeCount && selection.getRangeAt(0);
-  const pointRange = caretRangeFromPoint(e.raw.x, e.raw.y);
+  const pointRange = caretRangeFromPoint(e.x, e.y);
   // repair browser context menu change selection can not go through blocks
   if (
     currentRange &&
@@ -28,7 +30,7 @@ export function repairContextMenuRange(e: SelectionEvent) {
       resetNativeSelection(currentRange);
     });
   } else {
-    e.raw.preventDefault();
+    e.preventDefault();
   }
 }
 
@@ -38,6 +40,7 @@ export type DragDirection =
   | 'left-bottom'
   | 'left-top'
   | 'center-bottom'
+  | 'center-top'
   // no select direction, for example select all by `ctrl + a`
   | 'directionless';
 
@@ -45,14 +48,14 @@ export type DragDirection =
 // text can be applied both text and paragraph formatting actions, while others can only be applied paragraph actions
 export type SelectedBlockType = 'Text' | 'Caret' | 'Other';
 
-export function getDragDirection(e: SelectionEvent): DragDirection {
+export function getDragDirection(e: PointerEventState): DragDirection {
   const startX = e.start.x;
   const startY = e.start.y;
-  const endX = e.x;
-  const endY = e.y;
+  const endX = e.point.x;
+  const endY = e.point.y;
   // selection direction
   const isForwards = endX > startX;
-  const range = getCurrentRange();
+  const range = getCurrentNativeRange();
   const selectedOneLine = !isMultiLineRange(range);
 
   if (isForwards) {
@@ -82,8 +85,8 @@ export function getDragDirection(e: SelectionEvent): DragDirection {
  * }
  * ```
  */
-export function getNativeSelectionMouseDragInfo(e: SelectionEvent) {
-  const curRange = getCurrentRange();
+export function getNativeSelectionMouseDragInfo(e: PointerEventState) {
+  const curRange = getCurrentNativeRange();
   const direction = getDragDirection(e);
 
   const isSelectedNothing =
@@ -160,6 +163,40 @@ export function calcPositionPointByRange(
   };
   return positioningPoint;
 }
+/**
+ * This function is used to calculate the position of the format bar.
+ *
+ * After update block type, the native selection may be change to block selection,
+ * for example, update block to code block.
+ * So we need to get the targe block's rect dynamic.
+ */
+export function calcCurrentSelectionPosition(
+  direction: DragDirection,
+  // Edgeless mode not have pageSelectionState
+  pageSelectionState?: PageSelectionState
+) {
+  if (!pageSelectionState || !pageSelectionState.selectedBlocks.length) {
+    if (!hasNativeSelection()) {
+      throw new Error(
+        "Failed to get anchor element! There's no block selection or native selection."
+      );
+    }
+    // Native selection
+    const range = getCurrentNativeRange();
+    const positioningPoint = calcPositionPointByRange(range, direction);
+    return positioningPoint;
+  }
+  // Block selection
+  const blocks = pageSelectionState.selectedBlocks;
+  const firstBlock = blocks[0];
+  const lastBlock = blocks[blocks.length - 1];
+  const targetBlock = direction.includes('bottom') ? lastBlock : firstBlock;
+  // Block selection always use the center of the block
+  const rect = targetBlock.getBoundingClientRect();
+  const x = rect.x + rect.width / 2;
+  const y = direction.includes('bottom') ? rect.bottom : rect.top;
+  return { x, y };
+}
 
 type CollisionBox = {
   /**
@@ -208,6 +245,8 @@ export function calcSafeCoordinate({
 /**
  * Used to compare the space available
  * at the top and bottom of an element within a container.
+ *
+ * Please give preference to {@link getPopperPosition}
  */
 export function compareTopAndBottomSpace(
   obj: { getBoundingClientRect: () => DOMRect },
@@ -224,5 +263,66 @@ export function compareTopAndBottomSpace(
     placement: topOrBottom,
     // the height is the available space.
     height: (topOrBottom === 'top' ? topSpace : bottomSpace) - gap,
+  };
+}
+
+/**
+ * Get the position of the popper element with flip.
+ */
+export function getPopperPosition(
+  popper: {
+    getBoundingClientRect: () => DOMRect;
+  },
+  reference: {
+    getBoundingClientRect: () => DOMRect;
+  },
+  { gap = 12, offsetY = 5 }: { gap?: number; offsetY?: number } = {}
+) {
+  if (!popper) {
+    // foolproof, someone may use element with non-null assertion
+    console.warn(
+      'The popper element is not exist. Popper position maybe incorrect'
+    );
+  }
+  const { placement, height } = compareTopAndBottomSpace(
+    reference,
+    document.body,
+    gap + offsetY
+  );
+
+  const referenceRect = reference.getBoundingClientRect();
+  const positioningPoint = {
+    x: referenceRect.x,
+    y: referenceRect.y + (placement === 'bottom' ? referenceRect.height : 0),
+  };
+
+  // TODO maybe use the editor container as the boundary rect to avoid the format bar being covered by other elements
+  const boundaryRect = document.body.getBoundingClientRect();
+  // Note: the popperRect.height maybe incorrect
+  // because we are calculated its correct height
+  const popperRect = popper?.getBoundingClientRect();
+
+  const safeCoordinate = calcSafeCoordinate({
+    positioningPoint,
+    objRect: popperRect,
+    boundaryRect,
+    offsetY: placement === 'bottom' ? offsetY : -offsetY,
+  });
+
+  return {
+    placement,
+    /**
+     * The height is the available space height.
+     *
+     * Note: it's a max height, not the real height,
+     * because sometimes the popper's height is smaller than the available space.
+     */
+    height,
+    x: `${safeCoordinate.x}px`,
+    y:
+      placement === 'bottom'
+        ? `${safeCoordinate.y}px`
+        : // We need to use `calc(-100%)` since the height of popper maybe incorrect
+          `calc(${safeCoordinate.y}px - 100%)`,
   };
 }

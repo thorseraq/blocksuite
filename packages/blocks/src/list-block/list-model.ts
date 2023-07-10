@@ -1,16 +1,23 @@
-import { defineBlockSchema, SchemaToModel } from '@blocksuite/store';
-import { literal } from 'lit/static-html.js';
+import { defineBlockSchema, type SchemaToModel } from '@blocksuite/store';
 
-export const ListBlockModelSchema = defineBlockSchema(
-  'affine:list',
-  () => ({
+export type ListType = 'bulleted' | 'numbered' | 'todo' | 'toggle';
+export const ListBlockSchema = defineBlockSchema({
+  flavour: 'affine:list',
+  props: internal => ({
     type: 'bulleted' as ListType,
+    text: internal.Text(),
     checked: false,
   }),
-  {
+  metadata: {
     version: 1,
-    tag: literal`affine-list`,
-  }
-);
+    role: 'content',
+    parent: [
+      'affine:note',
+      'affine:database',
+      'affine:list',
+      'affine:paragraph',
+    ],
+  },
+});
 
-export type ListBlockModel = SchemaToModel<typeof ListBlockModelSchema>;
+export type ListBlockModel = SchemaToModel<typeof ListBlockSchema>;

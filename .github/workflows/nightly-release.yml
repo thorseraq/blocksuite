@@ -7,42 +7,50 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch:
 
+permissions:
+  id-token: write
+
 jobs:
   nightly-release:
-    name: Nightly Release
+    name: Publish npm@nightly release
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v3
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+      - uses: actions/checkout@v3
         with:
-          version: 7.9.5
-
-      - name: Setup Node.js
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v2
+        name: Install pnpm
+        id: pnpm-install
+      - name: Use Node.js LTS
         uses: actions/setup-node@v3
         with:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
 
-      - name: Install Dependencies
+      - uses: actions/cache@v3
+        name: Setup pnpm cache
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
         run: pnpm install
 
       - uses: toeverything/set-build-version@latest
 
-      - name: Replace version
-        run: ./scripts/publish-to-github.sh
+      - name: Replace nightly version fields
+        run: ./scripts/replace-nightly-version.sh
 
-      - name: Create Release Pull Request or Publish to npm
-        id: changesets
-        uses: changesets/action@v1
-        with:
-          publish: pnpm release --tag nightly
-          createGithubReleases: false
+      - name: Try publishing to NPM
+        run: ./scripts/publish.sh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NIGHTLY: true
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Cleanup tags
-        run: ./scripts/cleanup-tags.sh
+          NPM_CONFIG_PROVENANCE: true

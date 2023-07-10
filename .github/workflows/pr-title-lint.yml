@@ -1,4 +1,4 @@
-name: Pull request title lint
+name: PR Title Lint
 
 on:
   pull_request:
@@ -14,12 +14,11 @@ permissions:
 
 jobs:
   check-pull-request-title:
+    name: Check pull request title
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: pnpm/action-setup@v2
-        with:
-          version: 7.9.5
       - uses: actions/setup-node@v3
         with:
           node-version-file: '.nvmrc'

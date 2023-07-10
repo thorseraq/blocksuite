@@ -1,18 +1,40 @@
-import type { BaseText, BaseTextAttributes } from './components/base-text.js';
+import type { TemplateResult } from 'lit';
 
-export interface CustomTypes {
-  [key: string]: unknown;
+import type { BaseTextAttributes } from './utils/index.js';
+
+export type DeltaInsert<
+  TextAttributes extends BaseTextAttributes = BaseTextAttributes
+> = {
+  insert: string;
+  attributes?: TextAttributes;
+};
+
+export type AttributeRenderer<
+  TextAttributes extends BaseTextAttributes = BaseTextAttributes
+> = (delta: DeltaInsert<TextAttributes>) => TemplateResult<1>;
+
+export interface VRange {
+  index: number;
+  length: number;
 }
 
-type ExtendableKeys = 'Element' | 'Attributes';
-type ExtendedType<K extends ExtendableKeys, B> = unknown extends CustomTypes[K]
-  ? B
-  : CustomTypes[K];
+export type VRangeUpdatedProp = [
+  range: VRange,
+  type: 'native' | 'input' | 'other'
+];
 
-export type TextAttributes = ExtendedType<'Attributes', BaseTextAttributes>;
-export type TextElement = ExtendedType<'Element', BaseText>;
+export type DeltaEntry<
+  TextAttributes extends BaseTextAttributes = BaseTextAttributes
+> = [delta: DeltaInsert<TextAttributes>, range: VRange];
 
-export type DeltaInsert<A extends TextAttributes = TextAttributes> = {
-  insert: string;
-  attributes?: A;
-};
+// corresponding to [anchorNode/focusNode, anchorOffset/focusOffset]
+export type NativePoint = readonly [node: Node, offset: number];
+// the number here is relative to the text node
+export type TextPoint = readonly [text: Text, offset: number];
+
+export interface DomPoint {
+  // which text node this point is in
+  text: Text;
+  // the index here is relative to the Editor, not text node
+  index: number;
+}

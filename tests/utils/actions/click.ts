@@ -1,13 +1,34 @@
+import type { IPoint } from '@blocksuite/blocks';
 import type { Page } from '@playwright/test';
 
 import { waitNextFrame } from './misc.js';
 
+function getDebugMenu(page: Page) {
+  const debugMenu = page.locator('debug-menu');
+  return {
+    debugMenu,
+    undoBtn: debugMenu.locator('sl-button[content="Undo"]'),
+    redoBtn: debugMenu.locator('sl-button[content="Redo"]'),
+
+    blockTypeButton: debugMenu.getByRole('button', { name: 'Block Type' }),
+    testOperationsButton: debugMenu.getByRole('button', {
+      name: 'Test Operations',
+    }),
+
+    addNewPageBtn: debugMenu.locator('sl-button[content="Add New Page"]'),
+  };
+}
+
+export async function click(page: Page, point: IPoint) {
+  await page.mouse.click(point.x, point.y);
+}
+
 export async function undoByClick(page: Page) {
-  await page.click('sl-button[content="Undo"]');
+  await getDebugMenu(page).undoBtn.click();
 }
 
 export async function redoByClick(page: Page) {
-  await page.click('sl-button[content="Redo"]');
+  await getDebugMenu(page).redoBtn.click();
 }
 
 export async function clickBlockById(page: Page, id: string) {
@@ -15,7 +36,7 @@ export async function clickBlockById(page: Page, id: string) {
 }
 
 export async function doubleClickBlockById(page: Page, id: string) {
-  await page.click(`[data-block-id="${id}"]`);
+  await page.dblclick(`[data-block-id="${id}"]`);
 }
 
 export async function disconnectByClick(page: Page) {
@@ -26,12 +47,42 @@ export async function connectByClick(page: Page) {
   await clickTestOperationsMenuItem(page, 'Connect');
 }
 
-export async function addFrameByClick(page: Page) {
-  await clickTestOperationsMenuItem(page, 'Add Frame');
+export async function addNoteByClick(page: Page) {
+  await clickTestOperationsMenuItem(page, 'Add Note');
+}
+
+export async function addNewPage(page: Page) {
+  const { addNewPageBtn } = getDebugMenu(page);
+  await addNewPageBtn.click();
+  const pageMetas = await page.evaluate(() => {
+    const { workspace } = window;
+    return workspace.meta.pageMetas;
+  });
+  if (!pageMetas.length) throw new Error('Add new page failed');
+  return pageMetas[pageMetas.length - 1];
+}
+
+export async function switchToPage(page: Page, pageId?: string) {
+  if (!pageId) {
+    const pageMetas = await page.evaluate(() => {
+      const { workspace } = window;
+      return workspace.meta.pageMetas;
+    });
+    if (!pageMetas.length) throw new Error("There's no page to switch to");
+
+    pageId = pageMetas[0].id;
+  }
+
+  const { debugMenu, addNewPageBtn } = getDebugMenu(page);
+  if (!(await addNewPageBtn.isVisible())) {
+    await clickTestOperationsMenuItem(page, 'Toggle Tab Menu');
+  }
+  const targetTab = debugMenu.locator(`sl-tab[panel="${pageId}"]`);
+  await targetTab.click();
 }
 
 export async function clickTestOperationsMenuItem(page: Page, name: string) {
-  const menuButton = page.getByRole('button', { name: 'Test Operations' });
+  const menuButton = getDebugMenu(page).testOperationsButton;
   await menuButton.click();
   await waitNextFrame(page); // wait for animation ended
 
@@ -41,7 +92,7 @@ export async function clickTestOperationsMenuItem(page: Page, name: string) {
 }
 
 export async function clickBlockTypeMenuItem(page: Page, name: string) {
-  const menuButton = page.getByRole('button', { name: 'Block Type' });
+  const menuButton = getDebugMenu(page).blockTypeButton;
   await menuButton.click();
 
   const menuItem = page.getByRole('menuitem', { name });
@@ -55,28 +106,6 @@ export async function addCodeBlock(page: Page) {
     const loader = document.querySelector('affine-code loader-element');
     return !loader;
   });
-}
-
-export async function switchEditorMode(page: Page) {
-  await page.click('sl-button[content="Switch Editor Mode"]');
-}
-
-export async function switchMouseMode(page: Page) {
-  await page.click('sl-button[content="Switch Mouse Mode"]');
-}
-
-export async function switchShapeColor(page: Page, color: string) {
-  await page.evaluate(color => {
-    window.debugMenu.shapeModeColor =
-      color as typeof window.debugMenu.shapeModeColor;
-  }, color);
-}
-
-export async function switchShapeType(page: Page, shapeType: string) {
-  await page.click('sl-select[aria-label="Shape Type"]');
-
-  const menuItem = page.getByRole('menuitem', { name: shapeType });
-  await menuItem.click();
 }
 
 export async function switchReadonly(page: Page) {
@@ -95,4 +124,8 @@ export async function switchReadonly(page: Page) {
 
 export async function activeEmbed(page: Page) {
   await page.click('.resizable-img');
+}
+
+export async function toggleDarkMode(page: Page) {
+  await page.click('sl-tooltip[content="Toggle Dark Mode"] sl-button');
 }

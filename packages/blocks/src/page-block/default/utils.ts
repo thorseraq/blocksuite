@@ -1,45 +1,41 @@
 import {
   BLOCK_CHILDREN_CONTAINER_PADDING_LEFT,
-  BLOCK_ID_ATTR,
   BLOCK_SERVICE_LOADING_ATTR,
+  DRAG_HANDLE_OFFSET_LEFT,
 } from '@blocksuite/global/config';
 import { assertExists, matchFlavours } from '@blocksuite/global/utils';
 import type { BaseBlockModel } from '@blocksuite/store';
 
-import { getService } from '../../__internal__/service.js';
+import { copyBlocks } from '../../__internal__/clipboard/index.js';
 import {
-  doesInSamePath,
-  getBlockById,
-  getBlockElementByModel,
-  getCurrentRange,
-  getRichTextByModel,
-  OpenBlockInfo,
-  resetNativeSelection,
-} from '../../__internal__/utils/index.js';
+  type BlockComponentElement,
+  type EditingState,
+  getBlockElementById,
+  getBlockElementsExcludeSubtrees,
+  getClosestBlockElementByPoint,
+  getModelByBlockElement,
+  isInSamePath,
+  type Point,
+  type SerializedBlock,
+} from '../../__internal__/index.js';
+import { getService } from '../../__internal__/service.js';
+import type { CodeBlockModel } from '../../code-block/index.js';
+import type { FormatQuickBar } from '../../components/format-quick-bar/index.js';
+import { showFormatQuickBar } from '../../components/format-quick-bar/index.js';
 import { DragHandle } from '../../components/index.js';
 import { toast } from '../../components/toast.js';
-import type { EmbedBlockModel } from '../../embed-block/embed-model.js';
-import type {
-  CodeBlockOption,
-  DefaultPageBlockComponent,
-} from './default-page-block.js';
-
-export interface EditingState {
-  model: BaseBlockModel;
-  position: DOMRect;
-  index: number;
-}
+import type { DefaultPageBlockComponent } from './default-page-block.js';
 
 function hasOptionBar(block: BaseBlockModel) {
   if (block.flavour === 'affine:code') return true;
-  if (block.flavour === 'affine:embed' && block.type === 'image') return true;
+  if (block.flavour === 'affine:image') return true;
   return false;
 }
 
 function getBlockWithOptionBarRect(
-  hoverDom: HTMLElement,
+  hoverDom: Element,
   block: BaseBlockModel
-): HTMLElement {
+): Element {
   if (hoverDom.hasAttribute(BLOCK_SERVICE_LOADING_ATTR)) {
     return hoverDom;
   }
@@ -49,7 +45,7 @@ function getBlockWithOptionBarRect(
     ) as HTMLElement;
     assertExists(codeBlockDom);
     return codeBlockDom;
-  } else if (block.flavour === 'affine:embed' && block.type === 'image') {
+  } else if (block.flavour === 'affine:image' && block.type === 'image') {
     const imgElement = hoverDom.querySelector(
       '.resizable-img'
     ) as HTMLDivElement;
@@ -64,7 +60,7 @@ function getDetectRect(block: BaseBlockModel, blockRect: DOMRect): DOMRect {
   // there is a optionBar on the right side
   if (block.flavour === 'affine:code') {
     detectRect.width += 52;
-  } else if (block.flavour === 'affine:embed' && block.type === 'image') {
+  } else if (block.flavour === 'affine:image') {
     detectRect.width += 50;
   }
   return detectRect;
@@ -85,8 +81,10 @@ export function getBlockEditingStateByPosition(
     skipX?: boolean;
   }
 ) {
-  const start = 0;
   const end = blocks.length - 1;
+  if (end === -1) return null;
+
+  const start = 0;
   return binarySearchBlockEditingState(blocks, x, y, start, end, options);
 }
 
@@ -101,9 +99,12 @@ export function getBlockEditingStateByCursor(
     dragging?: boolean;
   }
 ): EditingState | null {
+  let end = blocks.length - 1;
+  if (end === -1) return null;
+
   const size = options?.size || 5;
   const start = Math.max(cursor - size, 0);
-  const end = Math.min(cursor + size, blocks.length - 1);
+  end = Math.min(cursor + size, end);
   return binarySearchBlockEditingState(blocks, x, y, start, end, options);
 }
 
@@ -119,13 +120,31 @@ function binarySearchBlockEditingState(
     dragging?: boolean;
   }
 ): EditingState | null {
-  const dragging = Boolean(options?.dragging);
+  const noSkipX = !options?.skipX;
+  const dragging = !!options?.dragging;
+  let containerLeft = 0;
+
+  if (noSkipX) {
+    const firstBlock = getBlockAndRect(blocks, 0);
+    containerLeft = firstBlock.blockRect.left;
+  }
+
+  let inside = false;
   while (start <= end) {
     const mid = start + Math.floor((end - start) / 2);
     const { block, blockRect, detectRect, hoverDom } = getBlockAndRect(
       blocks,
       mid
     );
+
+    // if the detectRect is not in the view port, it's definitely not the block we want
+    if (detectRect.top > window.innerHeight) {
+      end = mid - 1;
+      continue;
+    } else if (detectRect.bottom < 0) {
+      start = mid + 1;
+      continue;
+    }
 
     // code block use async loading
     if (block.flavour === 'affine:code' && !hoverDom) {
@@ -169,34 +188,39 @@ function binarySearchBlockEditingState(
       }
     }
 
-    const in_block = y >= detectRect.top && y <= detectRect.bottom;
+    !inside && (inside = y >= detectRect.top && y <= detectRect.bottom);
 
-    if (in_block) {
+    if (inside) {
       assertExists(blockRect);
 
-      if (!options?.skipX) {
+      if (noSkipX) {
         if (dragging) {
-          if (block.depth && block.parentIndex !== undefined) {
+          x = Math.max(x + DRAG_HANDLE_OFFSET_LEFT, containerLeft);
+          let n = mid - 1;
+          if (n > 0) {
             let depth = Math.floor(
-              (blockRect.left - x) / BLOCK_CHILDREN_CONTAINER_PADDING_LEFT
+              (blockRect.left - containerLeft) /
+                BLOCK_CHILDREN_CONTAINER_PADDING_LEFT
             );
-            if (depth > 0) {
-              let result = getBlockAndRect(blocks, block.parentIndex);
-
-              while (
-                depth > 1 &&
-                result.block.depth &&
-                result.block.parentIndex !== undefined
+            while (n >= 0 && depth >= 0) {
+              const result = getBlockAndRect(blocks, n);
+              if (
+                result.hoverDom.compareDocumentPosition(hoverDom) &
+                Node.DOCUMENT_POSITION_CONTAINED_BY
               ) {
-                result = getBlockAndRect(blocks, result.block.parentIndex);
-                depth -= 1;
+                if (x >= result.blockRect.left && x < blockRect.left) {
+                  return {
+                    rect: result.blockRect,
+                    model: result.block,
+                    element: result.hoverDom as BlockComponentElement,
+                  };
+                } else {
+                  depth--;
+                  n--;
+                }
+              } else {
+                n--;
               }
-
-              return {
-                index: mid,
-                position: result.blockRect,
-                model: result.block,
-              };
             }
           }
         } else {
@@ -208,9 +232,9 @@ function binarySearchBlockEditingState(
       }
 
       return {
-        index: mid,
-        position: blockRect,
+        rect: blockRect,
         model: block,
+        element: hoverDom as BlockComponentElement,
       };
     }
 
@@ -218,6 +242,33 @@ function binarySearchBlockEditingState(
       end = mid - 1;
     } else if (detectRect.bottom < y) {
       start = mid + 1;
+    }
+
+    // if search failed, it may be caused by the mouse fall between two blocks
+    if (start > end) {
+      let targetIndex = -1;
+      // now start = end + 1, eg: [0, 1, ..., end start ..., blocks.length - 1]
+      if (start === blocks.length) {
+        targetIndex = end;
+      } else if (end === -1) {
+        targetIndex = start;
+      } else {
+        const { detectRect: prevDetectRect } = getBlockAndRect(blocks, end);
+        const { detectRect: nextDetectRect } = getBlockAndRect(blocks, start);
+        if (
+          y <
+          prevDetectRect.bottom +
+            (nextDetectRect.top - prevDetectRect.bottom) / 2
+        ) {
+          // nearer to prevDetectRect
+          targetIndex = end;
+        } else {
+          // nearer to nextDetectRect
+          targetIndex = start;
+        }
+      }
+      inside = true;
+      start = end = targetIndex;
     }
   }
 
@@ -228,9 +279,20 @@ function isPointIn(x: number, detectRect: DOMRect) {
   return x >= detectRect.left && x <= detectRect.left + detectRect.width;
 }
 
+const offscreen = document.createElement(
+  'div'
+) as unknown as BlockComponentElement;
+
 function getBlockAndRect(blocks: BaseBlockModel[], mid: number) {
   const block = blocks[mid];
-  const hoverDom = getBlockById(block.id);
+  let hoverDom = getBlockElementById(block.id);
+
+  // Give an empty position (xywh=0,0,0,0) for invisible blocks.
+  // Block may be hidden, e.g., inside a toggle list, see https://github.com/toeverything/blocksuite/pull/1139)
+  if (!hoverDom) {
+    hoverDom = offscreen;
+  }
+
   assertExists(hoverDom);
   let blockRect: DOMRect | null = null;
   let detectRect: DOMRect | null = null;
@@ -265,55 +327,6 @@ function getBlockAndRect(blocks: BaseBlockModel[], mid: number) {
   };
 }
 
-export async function downloadImage(model: BaseBlockModel) {
-  const imgSrc = await getUrlByModel(model);
-  const image = new Image();
-  imgSrc && (image.src = imgSrc);
-  image.setAttribute('crossOrigin', 'anonymous');
-  image.onload = function () {
-    const canvas = document.createElement('canvas');
-    canvas.width = image.width;
-    canvas.height = image.height;
-    const context = canvas.getContext('2d');
-    context && context.drawImage(image, 0, 0, image.width, image.height);
-    const url = canvas.toDataURL('image/png');
-    const a = document.createElement('a');
-    const event = new MouseEvent('click');
-    a.download = 'image';
-    a.href = url;
-    a.dispatchEvent(event);
-  };
-}
-
-export async function copyImage(model: EmbedBlockModel) {
-  const copyType = 'blocksuite/x-c+w';
-  const service = getService(model.flavour);
-  const text = service.block2Text(model, '', 0, 0);
-  const delta = [
-    {
-      insert: text,
-    },
-  ];
-  const copyData = JSON.stringify({
-    data: [
-      {
-        type: model.type,
-        sourceId: model.sourceId,
-        width: model.width,
-        height: model.height,
-        caption: model.caption,
-        flavour: model.flavour,
-        text: delta,
-        children: model.children,
-      },
-    ],
-  });
-  const copySuccess = performNativeCopy([
-    { mimeType: copyType, data: copyData },
-  ]);
-  copySuccess && toast('Copied image to clipboard');
-}
-
 function getTextDelta(model: BaseBlockModel) {
   if (!model.text) {
     return [];
@@ -325,7 +338,7 @@ function getTextDelta(model: BaseBlockModel) {
 export async function copyBlock(model: BaseBlockModel) {
   const copyType = 'blocksuite/x-c+w';
   const delta = getTextDelta(model);
-  const copyData: { data: OpenBlockInfo[] } = {
+  const copyData: { data: SerializedBlock[] } = {
     data: [
       {
         type: model.type,
@@ -377,53 +390,15 @@ function performNativeCopy(items: ClipboardItem[]): boolean {
   return success;
 }
 
-export function focusCaption(model: BaseBlockModel) {
-  const blockEle = getBlockElementByModel(model);
-  assertExists(blockEle);
-  const dom = blockEle.querySelector(
-    '.affine-embed-wrapper-caption'
-  ) as HTMLInputElement;
-  dom.classList.add('caption-show');
-  dom.focus();
-}
-
-async function getUrlByModel(model: BaseBlockModel) {
-  assertExists(model.sourceId);
-  const store = await model.page.blobs;
-  const url = store?.get(model.sourceId);
-  return url;
-}
-
-export function isControlledKeyboardEvent(e: KeyboardEvent) {
-  return e.ctrlKey || e.metaKey || e.shiftKey;
-}
-
-export function copyCode(codeBlockOption: CodeBlockOption) {
-  const richText = getRichTextByModel(codeBlockOption.model);
-  assertExists(richText);
-  const quill = richText.quill;
-  quill.setSelection(0, quill.getLength());
-  document.body.dispatchEvent(new ClipboardEvent('copy', { bubbles: true }));
-
-  const range = getCurrentRange();
-  range.setStart(richText, 0);
-  range.setEnd(richText, 0);
-  resetNativeSelection(range);
+export function copyCode(codeBlockModel: CodeBlockModel) {
+  copyBlocks({
+    type: 'Block',
+    models: [codeBlockModel],
+    startOffset: 0,
+    endOffset: 0,
+  });
 
   toast('Copied to clipboard');
-}
-
-export function deleteCodeBlock(codeBlockOption: CodeBlockOption) {
-  const model = codeBlockOption.model;
-  model.page.deleteBlock(model);
-}
-
-export function toggleWrap(codeBlockOption: CodeBlockOption) {
-  const syntaxElem = document.querySelector(
-    `[${BLOCK_ID_ATTR}="${codeBlockOption.model.id}"] .ql-syntax`
-  );
-  assertExists(syntaxElem);
-  syntaxElem.classList.toggle('wrap');
 }
 
 export function getAllowSelectedBlocks(
@@ -431,81 +406,128 @@ export function getAllowSelectedBlocks(
 ): BaseBlockModel[] {
   const result: BaseBlockModel[] = [];
   const blocks = model.children.slice();
-  if (!blocks) {
-    return [];
-  }
 
-  const dfs = (
-    blocks: BaseBlockModel[],
-    depth: number,
-    parentIndex: number
-  ) => {
+  const dfs = (blocks: BaseBlockModel[]) => {
     for (const block of blocks) {
-      if (block.flavour !== 'affine:frame') {
+      if (block.flavour !== 'affine:note') {
         result.push(block);
       }
-      block.depth = depth;
-      if (parentIndex !== -1) {
-        block.parentIndex = parentIndex;
-      }
-      block.children.length &&
-        dfs(block.children, depth + 1, result.length - 1);
+      block.children.length && dfs(block.children);
     }
   };
 
-  dfs(blocks, 0, -1);
+  dfs(blocks);
   return result;
 }
 
-export function createDragHandle(defaultPageBlock: DefaultPageBlockComponent) {
+export function createDragHandle(pageBlock: DefaultPageBlockComponent) {
+  let formatBar: FormatQuickBar | undefined;
   return new DragHandle({
     // drag handle should be the same level with editor-container
-    container: defaultPageBlock.mouseRoot.parentElement as HTMLElement,
-    getBlockEditingStateByCursor(
-      blocks,
-      pageX,
-      pageY,
-      cursor,
-      size,
-      skipX,
-      dragging
-    ) {
-      return getBlockEditingStateByCursor(blocks, pageX, pageY, cursor, {
-        size,
-        skipX,
-        dragging,
+    container: pageBlock.mouseRoot as HTMLElement,
+    onDragStartCallback() {
+      formatBar?.abortController.abort();
+    },
+    onDropCallback(_point, blockElements, editingState, type): void {
+      if (!editingState || type === 'none') return;
+      const { model } = editingState;
+      const page = pageBlock.page;
+      const models = getBlockElementsExcludeSubtrees(blockElements).map(
+        getModelByBlockElement
+      );
+      if (models.length === 1 && isInSamePath(page, model, models[0])) return;
+
+      page.captureSync();
+
+      const parent = page.getParent(model);
+      const dragBlockParent = page.getParent(models[0]);
+      if (type === 'database') {
+        page.moveBlocks(models, model);
+      } else {
+        assertExists(parent);
+        page.moveBlocks(models, parent, model, type === 'before');
+      }
+
+      // unneeded
+      // pageBlock.selection.clear();
+      // pageBlock.selection.state.type = 'block';
+
+      pageBlock.updateComplete.then(() => {
+        if (
+          dragBlockParent &&
+          matchFlavours(dragBlockParent, ['affine:database'])
+        ) {
+          const service = getService('affine:database');
+          service.select(undefined);
+        }
+
+        if (parent && matchFlavours(parent, ['affine:database'])) {
+          pageBlock.selection?.clear();
+          return;
+        }
+
+        // update selection rects
+        // block may change its flavour after moved.
+        requestAnimationFrame(() => {
+          pageBlock.selection?.setSelectedBlocks(
+            blockElements
+              .map(b => getBlockElementById(b.model.id))
+              .filter((b): b is BlockComponentElement => !!b)
+          );
+        });
       });
     },
-    getBlockEditingStateByPosition(blocks, pageX, pageY, skipX) {
-      return getBlockEditingStateByPosition(blocks, pageX, pageY, {
-        skipX,
-      });
+    setDragType(dragging: boolean) {
+      assertExists(pageBlock.selection);
+      pageBlock.selection.state.type = dragging ? 'block:drag' : 'block';
     },
-    onDropCallback(e, start, end): void {
-      const page = defaultPageBlock.page;
-      const startModel = start.model;
-      const rect = end.position;
-      const nextModel = end.model;
-      if (doesInSamePath(page, nextModel, startModel)) {
+    setSelectedBlock(modelState: EditingState | null, element) {
+      if (!pageBlock.selection) return;
+      const cellContainer = element?.closest('affine-database-cell-container');
+      if (cellContainer) {
+        cellContainer.table.selection.toggleRow(cellContainer.rowIndex);
         return;
       }
-      page.captureSync();
-      const distanceToTop = Math.abs(rect.top - e.y);
-      const distanceToBottom = Math.abs(rect.bottom - e.y);
-      page.moveBlock(startModel, nextModel, distanceToTop < distanceToBottom);
-      defaultPageBlock.signals.updateSelectedRects.emit([]);
-      defaultPageBlock.signals.updateFrameSelectionRect.emit(null);
-      defaultPageBlock.signals.updateEmbedEditingState.emit(null);
-      defaultPageBlock.signals.updateEmbedRects.emit([]);
-    },
-    setSelectedBlocks(selectedBlocks: EditingState | null): void {
-      if (selectedBlocks) {
-        const { position, index } = selectedBlocks;
-        defaultPageBlock.selection.selectBlocksByIndexAndBounding(
-          index,
-          position
-        );
+      if (!modelState) {
+        pageBlock.selection.selectOneBlock();
+        return;
       }
+      const model = modelState.model;
+      const parent = model.page.getParent(model);
+      if (parent && matchFlavours(parent, ['affine:database'])) {
+        const cellContainer = modelState?.element?.closest(
+          'affine-database-cell-container'
+        );
+        if (cellContainer) {
+          cellContainer.table.selection.selectRow(cellContainer.rowIndex);
+        }
+        return;
+      }
+      pageBlock.selection.selectOneBlock(modelState.element, modelState.rect);
+
+      formatBar = showFormatQuickBar({
+        container: pageBlock.selection.container,
+        page: pageBlock.page,
+        direction: 'center-bottom',
+        anchorEl: {
+          getBoundingClientRect: () => {
+            const rect = modelState.element.getBoundingClientRect();
+            return {
+              x: rect.x + rect.width / 2,
+              y: rect.y + rect.height,
+            };
+          },
+        },
+      });
+    },
+    getSelectedBlocks() {
+      assertExists(pageBlock.selection);
+      return pageBlock.selection.state.selectedBlocks;
+    },
+    getClosestBlockElement(point: Point) {
+      return getClosestBlockElementByPoint(point, {
+        rect: pageBlock.innerRect,
+      });
     },
   });
 }

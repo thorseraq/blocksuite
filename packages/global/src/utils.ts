@@ -1,6 +1,10 @@
+import type { BaseBlockModel } from '@blocksuite/store';
+
+import type { BlockModels } from './types.js';
+
 export type { Disposable } from './utils/disposable.js';
-export { DisposableGroup, flattenDisposable } from './utils/disposable.js';
-export { Signal } from './utils/signal.js';
+export { DisposableGroup } from './utils/disposable.js';
+export { Slot } from './utils/slot.js';
 export { caretRangeFromPoint, isFirefox, isWeb } from './utils/web.js';
 export const SYS_KEYS = new Set(['id', 'flavour', 'children']);
 
@@ -11,9 +15,24 @@ export function isPrimitive(
   return a !== Object(a);
 }
 
-export function assertExists<T>(val: T | null | undefined): asserts val is T {
+export function assertExists<T>(
+  val: T | null | undefined,
+  message: string | Error = 'val does not exist'
+): asserts val is T {
   if (val === null || val === undefined) {
-    throw new Error('val does not exist');
+    if (message instanceof Error) {
+      throw message;
+    }
+    throw new Error(message);
+  }
+}
+
+export function assertNotExists<T>(
+  val: T | null | undefined,
+  message = 'val exists'
+): asserts val is null | undefined {
+  if (val !== null && val !== undefined) {
+    throw new Error(message);
   }
 }
 
@@ -23,31 +42,34 @@ export function assertFlavours(model: { flavour: string }, allowed: string[]) {
   }
 }
 
-export function matchFlavours<
-  Key extends keyof BlockSuiteInternal.BlockModels &
-    string = keyof BlockSuiteInternal.BlockModels & string
->(
-  model: { flavour: Key },
-  expected: readonly Key[]
-): boolean /* model is BlockModels[Key] */ {
-  return expected.includes(model.flavour as Key);
+type BlockModelKey = keyof BlockModels;
+type Flavours<T> = T extends BlockModelKey[] ? BlockModels[T[number]] : never;
+type Writeable<T> = { -readonly [P in keyof T]: T[P] };
+
+export function matchFlavours<const Key extends readonly string[]>(
+  model: BaseBlockModel,
+  expected: Key
+): model is Flavours<Writeable<Key>> {
+  return expected.includes(model.flavour);
 }
 
-export const nonTextBlock: (keyof BlockSuiteInternal.BlockModels)[] = [
+// XXX: nonTextBlock may should be declared in block schema
+export const nonTextBlock: (keyof BlockModels)[] = [
   'affine:database',
   'affine:divider',
-  'affine:embed',
+  'affine:image',
   'affine:code',
+  'affine:bookmark',
 ];
 
 export const isNonTextBlock = <
-  Key extends keyof BlockSuiteInternal.BlockModels &
-    string = keyof BlockSuiteInternal.BlockModels & string
->(model: {
-  flavour: Key;
-}) => matchFlavours(model, nonTextBlock);
+  Key extends keyof BlockModels & string = keyof BlockModels & string
+>(
+  model: BaseBlockModel
+) => matchFlavours(model, nonTextBlock);
 
 type Allowed =
+  | unknown
   | void
   | null
   | undefined
@@ -58,10 +80,11 @@ type Allowed =
   | object;
 export function assertEquals<T extends Allowed, U extends T>(
   val: T,
-  expected: U
+  expected: U,
+  message = 'val is not same as expected'
 ): asserts val is U {
   if (!isEqual(val, expected)) {
-    throw new Error('val is not same as expected');
+    throw new Error(message);
   }
 }
 
@@ -99,5 +122,36 @@ export async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-export const getDefaultPlaygroundURL = (isE2E: boolean): URL =>
-  new URL(`http://localhost:${isE2E ? 4173 : 5173}/`);
+/**
+ * Returns an object with four arrays: add, remove and unchanged.
+ *
+ * add: elements in after that are not in before
+ * remove: elements in before that are not in after
+ * unchanged: elements in both before and after
+ */
+export function diffArray<T>(
+  before: T[],
+  after: T[],
+  compare = (a: T, b: T) => a === b
+) {
+  const add: T[] = [];
+  const remove: T[] = [];
+  const unchanged: T[] = [];
+
+  // Find elements in before that are not in after
+  for (const elem of before) {
+    if (!after.some(afterElem => compare(afterElem, elem))) {
+      remove.push(elem);
+    } else {
+      unchanged.push(elem);
+    }
+  }
+  // Find elements in after that are not in before
+  for (const elem of after) {
+    if (!before.some(beforeElem => compare(beforeElem, elem))) {
+      add.push(elem);
+    }
+  }
+
+  return { changed: add.length || remove.length, add, remove, unchanged };
+}

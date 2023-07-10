@@ -3,7 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
-import { test as baseTest } from '@playwright/test';
+import { expect, type Page, test as baseTest } from '@playwright/test';
+
+import {
+  enterPlaygroundRoom,
+  initEmptyParagraphState,
+} from './actions/misc.js';
+import { currentEditorIndex, scope } from './multiple-editor.js';
 
 const istanbulTempDir = process.env.ISTANBUL_TEMP_DIR
   ? path.resolve(process.env.ISTANBUL_TEMP_DIR)
@@ -14,7 +20,9 @@ function generateUUID() {
 }
 
 const enableCoverage = !!process.env.CI || !!process.env.COVERAGE;
-
+export const scoped = (stringsArray: TemplateStringsArray) => {
+  return `${scope ?? ''}${stringsArray.join()}`;
+};
 export const test = baseTest.extend({
   context: async ({ context }, use) => {
     if (enableCoverage) {
@@ -51,3 +59,51 @@ export const test = baseTest.extend({
     }
   },
 });
+if (scope) {
+  test.beforeEach(async ({ browser }, testInfo) => {
+    if (scope && !testInfo.title.startsWith(scope)) {
+      testInfo.fn = () => {
+        testInfo.skip();
+      };
+      testInfo.skip();
+      await browser.close();
+    }
+  });
+
+  let page: Page;
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage();
+  });
+
+  // eslint-disable-next-line no-empty-pattern
+  test.afterAll(async ({}, testInfo) => {
+    if (!scope || !testInfo.title.startsWith(scope)) {
+      return;
+    }
+    const focusInSecondEditor = await page.evaluate(
+      ([currentEditorIndex]) => {
+        const editor =
+          document.querySelectorAll('editor-container')[currentEditorIndex];
+        const selection = getSelection();
+        if (!selection || selection.rangeCount === 0) {
+          return true;
+        }
+        // once the range exists, it must be in the corresponding editor
+        return editor.contains(selection.getRangeAt(0).startContainer);
+      },
+      [currentEditorIndex]
+    );
+    expect(focusInSecondEditor).toBe(true);
+  });
+
+  test('ensure enable two editor', async ({ page }) => {
+    await enterPlaygroundRoom(page);
+    await initEmptyParagraphState(page);
+    const count = await page.evaluate(() => {
+      return document.querySelectorAll('editor-container').length;
+    });
+
+    expect(count).toBe(2);
+  });
+}

@@ -1,8 +1,11 @@
+import type { BlockModels } from '@blocksuite/global/types';
 import { isPrimitive, matchFlavours, SYS_KEYS } from '@blocksuite/global/utils';
 import { fromBase64, toBase64 } from 'lib0/buffer.js';
 import * as Y from 'yjs';
+import type { z } from 'zod';
 
-import type { BaseBlockModel } from '../base.js';
+import type { BaseBlockModel, BlockSchema } from '../base.js';
+import { internalPrimitives } from '../base.js';
 import { Text } from '../text-adapter.js';
 import type { Workspace } from '../workspace/index.js';
 import type {
@@ -12,6 +15,9 @@ import type {
   YBlocks,
 } from '../workspace/page.js';
 import type { Page } from '../workspace/page.js';
+import type { BlockSuiteDoc } from '../yjs/index.js';
+import { isPureObject } from '../yjs/index.js';
+import { native2Y } from '../yjs/utils.js';
 
 export function assertValidChildren(
   yBlocks: YBlocks,
@@ -29,10 +35,6 @@ export function assertValidChildren(
 export function initInternalProps(yBlock: YBlock, props: Partial<BlockProps>) {
   yBlock.set('sys:id', props.id);
   yBlock.set('sys:flavour', props.flavour);
-  if (props.flavour === 'affine:page') {
-    yBlock.set('meta:tags', new Y.Map());
-    yBlock.set('meta:tagSchema', new Y.Map());
-  }
 
   const yChildren = new Y.Array();
   yBlock.set('sys:children', yChildren);
@@ -42,28 +44,37 @@ export function initInternalProps(yBlock: YBlock, props: Partial<BlockProps>) {
 }
 
 export function syncBlockProps(
-  // schema: z.infer<typeof BlockSchema>,
-  defaultProps: Record<string, unknown>,
+  schema: z.infer<typeof BlockSchema>,
   yBlock: YBlock,
   props: Partial<BlockProps>,
   ignoredKeys: Set<string>
 ) {
-  Object.keys(props).forEach(key => {
+  const propSchema = schema.model.props?.(internalPrimitives) ?? {};
+  Object.entries(props).forEach(([key, value]) => {
     if (SYS_KEYS.has(key) || ignoredKeys.has(key)) return;
-    const value = props[key];
 
-    // TODO use schema
-    if (key === 'text' && value instanceof Text) {
-      yBlock.set(`prop:${key}`, value.yText);
+    const isText = propSchema[key] instanceof Text;
+    if (isText) {
+      if (value instanceof Text) {
+        yBlock.set(`prop:${key}`, value.yText);
+      } else {
+        // When copying the database, the value of title is a string
+        yBlock.set(`prop:${key}`, new Y.Text(value));
+      }
       return;
     }
-    if (!isPrimitive(value) && !Array.isArray(value)) {
+
+    if (
+      !isPrimitive(value) &&
+      !Array.isArray(value) &&
+      typeof value !== 'object'
+    ) {
       throw new Error('Only top level primitives are supported for now');
     }
 
     if (value !== undefined) {
-      if (Array.isArray(value)) {
-        yBlock.set(`prop:${key}`, Y.Array.from(value));
+      if (Array.isArray(value) || isPureObject(value)) {
+        yBlock.set(`prop:${key}`, native2Y(value, true));
       } else {
         yBlock.set(`prop:${key}`, value);
       }
@@ -71,10 +82,12 @@ export function syncBlockProps(
   });
 
   // set default value
-  Object.entries(defaultProps).forEach(([key, value]) => {
-    if (!yBlock.has(`prop:${key}`)) {
-      if (Array.isArray(value)) {
-        yBlock.set(`prop:${key}`, Y.Array.from(value));
+  Object.entries(propSchema).forEach(([key, value]) => {
+    if (!yBlock.has(`prop:${key}`) || yBlock.get(`prop:${key}`) === undefined) {
+      if (value instanceof Text) {
+        yBlock.set(`prop:${key}`, value.yText);
+      } else if (Array.isArray(value) || isPureObject(value)) {
+        yBlock.set(`prop:${key}`, native2Y(value, true));
       } else {
         yBlock.set(`prop:${key}`, value);
       }
@@ -82,7 +95,10 @@ export function syncBlockProps(
   });
 }
 
-export function toBlockProps(yBlock: YBlock): Partial<BlockProps> {
+export function toBlockProps(
+  yBlock: YBlock,
+  doc: BlockSuiteDoc
+): Partial<BlockProps> {
   const prefixedProps = yBlock.toJSON() as PrefixedBlockProps;
   const props: Partial<BlockProps> = {};
   Object.keys(prefixedProps).forEach(key => {
@@ -96,8 +112,16 @@ export function toBlockProps(yBlock: YBlock): Partial<BlockProps> {
 
     const key = prefixedKey.replace('prop:', '');
     const realValue = yBlock.get(prefixedKey);
-    if (realValue instanceof Y.Array) {
-      props[key] = realValue.toArray();
+    if (realValue instanceof Y.Map) {
+      const value = doc.proxy.createYProxy(realValue, {
+        deep: true,
+      });
+      props[key] = value;
+    } else if (realValue instanceof Y.Array) {
+      const value = doc.proxy.createYProxy(realValue, {
+        deep: true,
+      });
+      props[key] = value;
     } else {
       props[key] = prefixedProps[prefixedKey];
     }
@@ -114,10 +138,10 @@ export function applyYjsUpdateV2(workspace: Workspace, update: string): void {
   Y.applyUpdateV2(workspace.doc, fromBase64(update));
 }
 
-export function doesInsideBlockByFlavour(
+export function isInsideBlockByFlavour(
   page: Page,
-  block: BaseBlockModel,
-  flavour: keyof BlockSuiteInternal.BlockModels
+  block: BaseBlockModel | string,
+  flavour: keyof BlockModels
 ): boolean {
   const parent = page.getParent(block);
   if (parent === null) {
@@ -125,5 +149,5 @@ export function doesInsideBlockByFlavour(
   } else if (matchFlavours(parent, [flavour])) {
     return true;
   }
-  return doesInsideBlockByFlavour(page, parent, flavour);
+  return isInsideBlockByFlavour(page, parent, flavour);
 }

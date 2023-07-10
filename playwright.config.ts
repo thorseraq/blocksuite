@@ -7,10 +7,11 @@ import type {
 const config: PlaywrightTestConfig = {
   testDir: 'tests',
   fullyParallel: true,
-  timeout: process.env.CI ? 50_000 : 30_000,
   webServer: {
-    command: process.env.CI ? 'pnpm preview' : 'pnpm dev',
-    port: process.env.CI ? 4173 : 5173,
+    command: 'pnpm dev',
+    port: 5173,
+    // command: process.env.CI ? 'pnpm preview' : 'pnpm dev',
+    // port: process.env.CI ? 4173 : 5173,
     reuseExistingServer: !process.env.CI,
     env: {
       COVERAGE: process.env.COVERAGE ?? '',
@@ -27,8 +28,10 @@ const config: PlaywrightTestConfig = {
     trace: 'on-first-retry',
     // Record video only when retrying a test for the first time.
     video: 'on-first-retry',
+    // Timeout for each action
+    actionTimeout: 5_000,
   },
-  workers: '100%',
+  workers: '80%',
   retries: 1,
   // 'github' for GitHub Actions CI to generate annotations, plus a concise 'dot'
   // default 'list' when running locally
@@ -38,7 +41,6 @@ const config: PlaywrightTestConfig = {
 
 if (process.env.CI) {
   config.retries = 3;
-  config.workers = 8;
 }
 
 export default config;

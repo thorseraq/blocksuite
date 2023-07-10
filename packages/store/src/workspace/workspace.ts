@@ -1,303 +1,131 @@
-import { Signal } from '@blocksuite/global/utils';
+import { assertExists, Slot } from '@blocksuite/global/utils';
 import * as Y from 'yjs';
-import type { z } from 'zod';
 
-import { AwarenessStore, BlobUploadState } from '../awareness.js';
+import type { AwarenessStore } from '../awareness.js';
+import type { BlockSchemaType } from '../base.js';
 import { BlockSchema } from '../base.js';
-import {
-  BlobOptionsGetter,
-  BlobStorage,
-  BlobSyncState,
-  getBlobStorage,
-} from '../persistence/blob/index.js';
-import { Space } from '../space.js';
-import { Store, StoreOptions } from '../store.js';
-import type { BlockSuiteDoc } from '../yjs/index.js';
+import { createMemoryStorage } from '../persistence/blob/memory-storage.js';
+import type { BlobManager, BlobStorage } from '../persistence/blob/types.js';
+import { sha } from '../persistence/blob/utils.js';
+import { Store, type StoreOptions } from '../store.js';
+import { Text } from '../text-adapter.js';
+import { serializeYDoc } from '../utils/jsx.js';
+import { BacklinkIndexer } from './indexer/backlink.js';
+import { BlockIndexer } from './indexer/base.js';
+import type { QueryContent } from './indexer/search.js';
+import { SearchIndexer } from './indexer/search.js';
+import { type PageMeta, WorkspaceMeta } from './meta.js';
 import { Page } from './page.js';
-import { Indexer, QueryContent } from './search.js';
+import { Schema } from './schema.js';
 
-export interface PageMeta {
-  id: string;
-  title: string;
-  createDate: number;
-
-  [key: string]: string | number | boolean;
-}
-
-type WorkspaceMetaFields = {
-  pages: Y.Array<unknown>;
-  versions: Y.Map<unknown>;
-  name: string;
-  avatar: string;
-};
-
-class WorkspaceMeta<
-  Flags extends Record<string, unknown> = BlockSuiteFlags
-> extends Space<WorkspaceMetaFields, Flags> {
-  private _prevPages = new Set<string>();
-  pageAdded = new Signal<string>();
-  pageRemoved = new Signal<string>();
-  pagesUpdated = new Signal();
-  commonFieldsUpdated = new Signal();
-
-  constructor(id: string, doc: BlockSuiteDoc, awarenessStore: AwarenessStore) {
-    super(id, doc, awarenessStore, {
-      valueInitializer: {
-        pages: () => new Y.Array(),
-        versions: () => new Y.Map(),
-        avatar: () => '',
-        name: () => '',
-      },
-    });
-    this.origin.observeDeep(this._handleEvents);
-  }
-
-  get pages() {
-    return this.proxy.pages;
-  }
-
-  get name() {
-    return this.proxy.name;
-  }
-
-  get avatar() {
-    return this.proxy.avatar;
-  }
-
-  setName(name: string) {
-    this.doc.transact(() => {
-      this.proxy.name = name;
-    });
-  }
-
-  setAvatar(avatar: string) {
-    this.doc.transact(() => {
-      this.proxy.avatar = avatar;
-    });
-  }
-
-  get pageMetas() {
-    return this.proxy.pages.toJSON() as PageMeta[];
-  }
-
-  getPageMeta(id: string) {
-    return this.pageMetas.find(page => page.id === id);
-  }
-
-  addPageMeta(page: PageMeta, index?: number) {
-    const yPage = new Y.Map();
-    this.doc.transact(() => {
-      Object.entries(page).forEach(([key, value]) => {
-        yPage.set(key, value);
-      });
-      if (index === undefined) {
-        this.pages.push([yPage]);
-      } else {
-        this.pages.insert(index, [yPage]);
-      }
-    });
-  }
-
-  setPageMeta(id: string, props: Partial<PageMeta>) {
-    const pages = this.pages.toJSON() as PageMeta[];
-    const index = pages.findIndex((page: PageMeta) => id === page.id);
-
-    this.doc.transact(() => {
-      if (index === -1) return;
-
-      const yPage = this.pages.get(index) as Y.Map<unknown>;
-      Object.entries(props).forEach(([key, value]) => {
-        yPage.set(key, value);
-      });
-    });
-  }
-
-  removePage(id: string) {
-    const pages = this.pages.toJSON() as PageMeta[];
-    const index = pages.findIndex((page: PageMeta) => id === page.id);
-
-    this.doc.transact(() => {
-      if (index !== -1) {
-        this.pages.delete(index, 1);
-      }
-    });
-  }
-
-  /**
-   * @internal Only for page initialization
-   */
-  writeVersion(workspace: Workspace) {
-    const versions = this.proxy.versions;
-    workspace.flavourSchemaMap.forEach((schema, flavour) => {
-      versions.set(flavour, schema.version);
-    });
-  }
-
-  /**
-   * @internal Only for page initialization
-   */
-  validateVersion(workspace: Workspace) {
-    const versions = this.proxy.versions.toJSON();
-    const dataFlavours = Object.keys(versions);
-
-    // TODO: emit data validation error signals
-    if (dataFlavours.length === 0) {
-      throw new Error(
-        'Invalid workspace data, missing versions field. Please make sure the data is valid.'
-      );
-    }
-
-    dataFlavours.forEach(dataFlavour => {
-      const dataVersion = versions[dataFlavour] as number;
-      const editorVersion =
-        workspace.flavourSchemaMap.get(dataFlavour)?.version;
-      if (!editorVersion) {
-        throw new Error(
-          `Editor missing ${dataFlavour} flavour. Please make sure this block flavour is registered.`
-        );
-      } else if (dataVersion > editorVersion) {
-        throw new Error(
-          `Editor doesn't support ${dataFlavour}@${dataVersion}. Please upgrade the editor.`
-        );
-      } else if (dataVersion < editorVersion) {
-        throw new Error(
-          `In workspace data, the block flavour ${dataFlavour}@${dataVersion} is outdated. Please downgrade the editor or try data migration.`
-        );
-      }
-    });
-  }
-
-  private _handlePageEvent() {
-    const { pageMetas, _prevPages } = this;
-
-    pageMetas.forEach(pageMeta => {
-      // newly added space can't be found
-      // unless explictly getMap after meta updated
-      this.doc.getMap('space:' + pageMeta.id);
-
-      if (!_prevPages.has(pageMeta.id)) {
-        // Ensure following YEvent handler could be triggered in correct order.
-        setTimeout(() => this.pageAdded.emit(pageMeta.id));
-      }
-    });
-
-    _prevPages.forEach(prevPageId => {
-      const isRemoved = !pageMetas.find(p => p.id === prevPageId);
-      if (isRemoved) {
-        this.pageRemoved.emit(prevPageId);
-      }
-    });
-
-    _prevPages.clear();
-    pageMetas.forEach(page => _prevPages.add(page.id));
-
-    this.pagesUpdated.emit();
-  }
-
-  private _handleCommonFieldsEvent() {
-    this.commonFieldsUpdated.emit();
-  }
-
-  private _handleEvents = (
-    events: Y.YEvent<Y.Array<unknown> | Y.Text | Y.Map<unknown>>[]
-  ) => {
-    events.forEach(e => {
-      const hasKey = (k: string) =>
-        e.target === this.origin && e.changes.keys.has(k);
-
-      if (
-        e.target === this.pages ||
-        e.target.parent === this.pages ||
-        hasKey('pages')
-      ) {
-        this._handlePageEvent();
-      } else if (hasKey('name') || hasKey('avatar')) {
-        this._handleCommonFieldsEvent();
-      }
-    });
-  };
-}
+export type WorkspaceOptions = StoreOptions;
 
 export class Workspace {
   static Y = Y;
-  public readonly room: string | undefined;
 
   private _store: Store;
-  private _indexer: Indexer;
-  private _blobStorage: Promise<BlobStorage | null>;
-  private _blobOptionsGetter?: BlobOptionsGetter = (k: string) =>
-    ({ api: '/api/workspace' }[k]);
+
+  private readonly _schema: Schema;
+  private readonly _storages: BlobStorage[] = [];
+  private readonly _blobStorage: BlobManager;
 
   meta: WorkspaceMeta;
 
-  signals: {
-    pagesUpdated: Signal;
-    pageAdded: Signal<string>;
-    pageRemoved: Signal<string>;
+  slots = {
+    pagesUpdated: new Slot(),
+    pageAdded: new Slot<string>(),
+    pageRemoved: new Slot<string>(),
+    // call this when a blob is updated, deleted or created
+    //  workspace will update re-fetch the blob and update the page
+    blobUpdate: new Slot<void>(),
   };
 
-  flavourSchemaMap = new Map<string, z.infer<typeof BlockSchema>>();
-  flavourInitialPropsMap = new Map<string, Record<string, unknown>>();
+  indexer: {
+    search: SearchIndexer;
+    backlink: BacklinkIndexer;
+  };
 
-  constructor(options: StoreOptions) {
-    this._store = new Store(options);
-    this._indexer = new Indexer(this.doc);
-    if (options.blobOptionsGetter) {
-      this._blobOptionsGetter = options.blobOptionsGetter;
-    }
-    if (!options.isSSR) {
-      this._blobStorage = getBlobStorage(options.room, k => {
-        return this._blobOptionsGetter ? this._blobOptionsGetter(k) : '';
-      });
-      this._blobStorage.then(blobStorage => {
-        blobStorage?.signals.onBlobSyncStateChange.on(state => {
-          const blobId = state.id;
-          const syncState = state.state;
-          if (
-            syncState === BlobSyncState.Waiting ||
-            syncState === BlobSyncState.Syncing
-          ) {
-            this.awarenessStore.setBlobState(blobId, BlobUploadState.Uploading);
-            return;
-          }
+  constructor(storeOptions: WorkspaceOptions) {
+    this._schema = new Schema(this);
 
-          if (
-            syncState === BlobSyncState.Success ||
-            syncState === BlobSyncState.Failed
-          ) {
-            this.awarenessStore.setBlobState(blobId, BlobUploadState.Uploaded);
-            return;
-          }
+    this._store = new Store(storeOptions);
+
+    this._storages = (storeOptions.blobStorages ?? [createMemoryStorage]).map(
+      fn => fn(storeOptions.id)
+    );
+
+    this._blobStorage = {
+      get: async id => {
+        let found = false;
+        let count = 0;
+        return new Promise(res => {
+          this._storages.forEach(storage =>
+            storage.crud
+              .get(id)
+              .then(result => {
+                if (result && !found) {
+                  found = true;
+                  res(result);
+                }
+                if (++count === this._storages.length && !found) {
+                  res(null);
+                }
+              })
+              .catch(e => {
+                console.error(e);
+                if (++count === this._storages.length && !found) {
+                  res(null);
+                }
+              })
+          );
         });
-      });
-    } else {
-      // blob storage is not reachable in server side
-      this._blobStorage = Promise.resolve(null);
-    }
-    this.room = options.room;
-
-    this.meta = new WorkspaceMeta('space:meta', this.doc, this.awarenessStore);
-
-    this.signals = {
-      pagesUpdated: this.meta.pagesUpdated,
-      pageAdded: this.meta.pageAdded,
-      pageRemoved: this.meta.pageRemoved,
+      },
+      set: async value => {
+        const key = await sha(await value.arrayBuffer());
+        await Promise.all(this._storages.map(s => s.crud.set(key, value)));
+        return key;
+      },
+      delete: async key => {
+        await Promise.all(this._storages.map(s => s.crud.delete(key)));
+      },
+      list: async () => {
+        const keys = new Set<string>();
+        await Promise.all(
+          this._storages.map(async s => {
+            const list = await s.crud.list();
+            list.forEach(key => keys.add(key));
+          })
+        );
+        return Array.from(keys);
+      },
     };
 
-    this._handlePageEvent();
+    this.meta = new WorkspaceMeta(this.doc);
+    this._bindPageMetaEvents();
+
+    const blockIndexer = new BlockIndexer(this.doc, { slots: this.slots });
+    this.indexer = {
+      search: new SearchIndexer(this.doc),
+      backlink: new BacklinkIndexer(blockIndexer),
+    };
   }
 
-  get connected(): boolean {
-    return this._store.connected;
+  get id() {
+    return this._store.id;
   }
 
-  connect = () => {
-    this._store.connect();
-  };
+  get isEmpty() {
+    if (this.doc.store.clients.size === 0) return true;
 
-  disconnect = () => {
-    this._store.disconnect();
-  };
+    let flag = false;
+    if (this.doc.store.clients.size === 1) {
+      const items = [...this.doc.store.clients.values()][0];
+      if (items.length <= 1) {
+        flag = true;
+      }
+    }
+    return flag;
+  }
 
   get awarenessStore(): AwarenessStore {
     return this._store.awarenessStore;
@@ -311,63 +139,89 @@ export class Workspace {
     return this._blobStorage;
   }
 
+  get pages() {
+    return this._pages;
+  }
+
   private get _pages() {
     // the meta space is not included
-    return this._store.spaces as Map<string, Page>;
+    return this._store.spaces as Map<`space:${string}`, Page>;
   }
 
   get doc() {
     return this._store.doc;
   }
 
-  register(blockSchema: z.infer<typeof BlockSchema>[]) {
+  get idGenerator() {
+    return this._store.idGenerator;
+  }
+
+  get schema() {
+    return this._schema;
+  }
+
+  register(blockSchema: BlockSchemaType[]) {
     blockSchema.forEach(schema => {
       BlockSchema.parse(schema);
-      this.flavourSchemaMap.set(schema.model.flavour, schema);
-      this.flavourInitialPropsMap.set(
-        schema.model.flavour,
-        schema.model.props()
-      );
+      this.schema.flavourSchemaMap.set(schema.model.flavour, schema);
     });
     return this;
   }
 
   private _hasPage(pageId: string) {
-    return this._pages.has('space:' + pageId);
+    return this._pages.has(`space:${pageId}`);
   }
 
   getPage(pageId: string): Page | null {
-    if (!pageId.startsWith('space:')) {
-      pageId = 'space:' + pageId;
-    }
+    const prefixedPageId = pageId.startsWith('space:')
+      ? (pageId as `space:${string}`)
+      : (`space:${pageId}` as const);
 
-    const page = this._pages.get(pageId) ?? null;
-    return page;
+    return this._pages.get(prefixedPageId) ?? null;
   }
 
-  private _handlePageEvent() {
-    this.signals.pageAdded.on(pageId => {
-      const page = new Page(
-        this,
-        pageId,
-        this.doc,
-        this.awarenessStore,
-        this._store.idGenerator
-      );
+  private _bindPageMetaEvents() {
+    this.meta.pageMetaAdded.on(pageId => {
+      const page = new Page({
+        id: pageId,
+        workspace: this,
+        doc: this.doc,
+        awarenessStore: this.awarenessStore,
+        idGenerator: this._store.idGenerator,
+      });
       this._store.addSpace(page);
-      page.syncFromExistingDoc();
-      this._indexer.onCreatePage(pageId);
+      this.slots.pageAdded.emit(page.id);
     });
 
-    this.signals.pageRemoved.on(id => {
+    this.meta.pageMetasUpdated.on(() => this.slots.pagesUpdated.emit());
+
+    this.meta.pageMetaRemoved.on(id => {
       const page = this.getPage(id) as Page;
-      page.dispose();
       this._store.removeSpace(page);
-      // TODO remove page from indexer
+      page.remove();
+      this.slots.pageRemoved.emit(id);
     });
   }
 
-  createPage(pageId: string) {
+  /**
+   * By default, only an empty page will be created.
+   * If the `init` parameter is passed, a `surface`, `note`, and `paragraph` block
+   * will be created in the page simultaneously.
+   */
+  createPage(options: { id?: string } | string = {}) {
+    // Migration guide
+    if (typeof options === 'string') {
+      options = { id: options };
+      console.warn(
+        '`createPage(pageId)` is deprecated, use `createPage()` directly or `createPage({ id: pageId })` instead'
+      );
+      console.warn(
+        'More details see https://github.com/toeverything/blocksuite/pull/2272'
+      );
+    }
+    // End of migration guide. Remove this in the next major version
+
+    const { id: pageId = this.idGenerator() } = options;
     if (this._hasPage(pageId)) {
       throw new Error('page already exists');
     }
@@ -376,46 +230,161 @@ export class Workspace {
       id: pageId,
       title: '',
       createDate: +new Date(),
+      tags: [],
     });
+    return this.getPage(pageId) as Page;
   }
 
   /** Update page meta state. Note that this intentionally does not mutate page state. */
-  setPageMeta(pageId: string, props: Partial<PageMeta>) {
+  setPageMeta(
+    pageId: string,
+    // You should not update subpageIds directly.
+    props: Partial<PageMeta>
+  ) {
     this.meta.setPageMeta(pageId, props);
   }
 
   removePage(pageId: string) {
-    this.meta.removePage(pageId);
+    const pageMeta = this.meta.getPageMeta(pageId);
+    assertExists(pageMeta);
+
+    const page = this.getPage(pageId);
+    if (!page) return;
+
+    page.dispose();
+    this.meta.removePageMeta(pageId);
+    this._store.removeSpace(page);
   }
 
   search(query: QueryContent) {
-    return this._indexer.search(query);
-  }
-
-  setGettingBlobOptions(blobOptionsGetter: BlobOptionsGetter) {
-    this._blobOptionsGetter = blobOptionsGetter;
+    return this.indexer.search.search(query);
   }
 
   /**
-   * @internal Only for testing
+   * @internal
+   * Import an object expression of a page.
+   * Specify the page you want to update by passing the `pageId` parameter and it will
+   * create a new page if it does not exist.
    */
-  exportYDoc() {
-    const binary = Y.encodeStateAsUpdate(this.doc);
-    const file = new Blob([binary], { type: 'application/octet-stream' });
-    const fileUrl = URL.createObjectURL(file);
+  async importPageSnapshot(json: unknown, pageId: string) {
+    const unprefix = (str: string) =>
+      str.replace('sys:', '').replace('prop:', '').replace('space:', '');
+    const visited = new Set();
+    let page = this.getPage(pageId);
+    if (page) {
+      await page.waitForLoaded();
+      page.clear();
+    } else {
+      page = this.createPage({ id: pageId });
+      await page.waitForLoaded();
+    }
 
-    const link = document.createElement('a');
-    link.href = fileUrl;
-    link.download = 'workspace.ydoc';
-    link.click();
+    const sanitize = async (props: Record<string, unknown>) => {
+      const result: Record<string, unknown> = {};
 
-    URL.revokeObjectURL(fileUrl);
+      // TODO: https://github.com/toeverything/blocksuite/issues/2939
+      if (props['sys:flavour'] === 'affine:surface' && props['prop:elements']) {
+        Object.values(props['prop:elements']).forEach(element => {
+          const _element = element as Record<string, unknown>;
+          if (_element['type'] === 'text') {
+            const yText = new Y.Text();
+            yText.applyDelta(_element['text']);
+            _element['text'] = yText;
+          }
+        });
+      }
+
+      // setup embed source
+      if (props['sys:flavour'] === 'affine:image') {
+        const maybeUrl = props['prop:sourceId'];
+        if (typeof maybeUrl !== 'string') {
+          throw new Error('Embed source is not a string');
+        }
+        if (maybeUrl.startsWith('http')) {
+          try {
+            const resp = await fetch(maybeUrl, {
+              cache: 'no-cache',
+              mode: 'cors',
+              headers: {
+                Origin: window.location.origin,
+              },
+            });
+            const imgBlob = await resp.blob();
+            if (!imgBlob.type.startsWith('image/')) {
+              throw new Error('Embed source is not an image');
+            }
+
+            assertExists(page);
+            const storage = page.blobs;
+            assertExists(storage);
+            props['prop:sourceId'] = (await storage.set(imgBlob)) as never;
+          } catch (e) {
+            console.error('Failed to fetch embed source');
+            console.error(e);
+          }
+        }
+      }
+
+      Object.keys(props).forEach(key => {
+        if (key === 'sys:children' || key === 'sys:flavour') {
+          return;
+        }
+
+        result[unprefix(key)] = props[key];
+        if (key === 'prop:text' || key === 'prop:title') {
+          const yText = new Y.Text();
+          yText.applyDelta(props[key]);
+          result[unprefix(key)] = new Text(yText);
+        }
+      });
+      return result;
+    };
+
+    const { blocks } = json as Record<string, never>;
+    assertExists(blocks, 'Snapshot structure is invalid');
+
+    const addBlockByProps = async (
+      page: Page,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      props: any,
+      parent?: string
+    ) => {
+      const id = props['sys:id'] as string;
+      if (visited.has(id)) return;
+      const sanitizedProps = await sanitize(props);
+      page.addBlock(props['sys:flavour'], sanitizedProps, parent);
+      await props['sys:children'].reduce(
+        async (prev: Promise<unknown>, childId: string) => {
+          await prev;
+          await addBlockByProps(page, blocks[childId], id);
+          visited.add(childId);
+        },
+        Promise.resolve()
+      );
+    };
+
+    const root = Object.values(blocks).find(block => {
+      const _block = block as Record<string, unknown>;
+      const flavour = _block['sys:flavour'] as string;
+      const schema = this.schema.flavourSchemaMap.get(flavour);
+      return schema?.model?.role === 'root';
+    });
+    await addBlockByProps(page, root);
   }
 
-  /**
-   * @internal Only for testing
-   */
-  exportJSX(id = '0') {
-    return this._store.exportJSX(id);
+  exportPageSnapshot(pageId: string) {
+    const page = this.getPage(pageId);
+    assertExists(page, `page ${pageId} not found`);
+    return serializeYDoc(page.spaceDoc);
+  }
+
+  exportSnapshot() {
+    return serializeYDoc(this.doc);
+  }
+
+  /** @internal Only for testing */
+  exportJSX(blockId?: string, pageId = this.meta.pageMetas.at(0)?.id) {
+    assertExists(pageId);
+    return this._store.exportJSX(pageId, blockId);
   }
 }

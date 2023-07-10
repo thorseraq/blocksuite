@@ -1,13 +1,12 @@
-import { defineBlockSchema, SchemaToModel } from '@blocksuite/store';
-import { literal } from 'lit/static-html.js';
+import { defineBlockSchema, type SchemaToModel } from '@blocksuite/store';
 
-export const DividerBlockModelSchema = defineBlockSchema(
-  'affine:divider',
-  () => ({}),
-  {
+export const DividerBlockSchema = defineBlockSchema({
+  flavour: 'affine:divider',
+  metadata: {
     version: 1,
-    tag: literal`affine-divider`,
-  }
-);
+    role: 'content',
+    children: [],
+  },
+});
 
-export type DividerBlockModel = SchemaToModel<typeof DividerBlockModelSchema>;
+export type DividerBlockModel = SchemaToModel<typeof DividerBlockSchema>;

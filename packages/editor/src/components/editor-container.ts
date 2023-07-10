@@ -1,210 +1,288 @@
 import {
-  getDefaultPageBlock,
+  type AbstractEditor,
+  activeEditorManager,
+  type DefaultPageBlockComponent,
+  type EdgelessPageBlockComponent,
+  edgelessPreset,
+  FileDropManager,
+  getPageBlock,
   getServiceOrRegister,
-  MouseMode,
-  PageBlockModel,
+  noop,
+  type PageBlockModel,
+  pagePreset,
+  readImageSize,
+  ThemeObserver,
 } from '@blocksuite/blocks';
-import { NonShadowLitElement, SurfaceBlockModel } from '@blocksuite/blocks';
-import { Page, Signal } from '@blocksuite/store';
-import { DisposableGroup } from '@blocksuite/store';
+import { ContentParser } from '@blocksuite/blocks/content-parser';
+import {
+  BlockSuiteRoot,
+  ShadowlessElement,
+  WithDisposable,
+} from '@blocksuite/lit';
+import { assertExists, isFirefox, type Page, Slot } from '@blocksuite/store';
 import { html } from 'lit';
-import { customElement, property, query, state } from 'lit/decorators.js';
-import { choose } from 'lit/directives/choose.js';
+import { customElement, property, query } from 'lit/decorators.js';
+import { keyed } from 'lit/directives/keyed.js';
 
-import { ClipboardManager, ContentParser } from '../managers/index.js';
 import { checkEditorElementActive, createBlockHub } from '../utils/editor.js';
 
+noop(BlockSuiteRoot);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function forwardSlot<T extends Record<string, Slot<any>>>(
+  from: T,
+  to: Partial<T>
+) {
+  Object.entries(from).forEach(([key, slot]) => {
+    const target = to[key];
+    if (target) {
+      slot.pipe(target);
+    }
+  });
+}
+
 @customElement('editor-container')
-export class EditorContainer extends NonShadowLitElement {
-  @property()
+export class EditorContainer
+  extends WithDisposable(ShadowlessElement)
+  implements AbstractEditor
+{
+  @property({ attribute: false })
   page!: Page;
 
-  @property()
-  mode?: 'page' | 'edgeless' = 'page';
+  @property({ attribute: false })
+  mode: 'page' | 'edgeless' = 'page';
 
-  @property()
-  readonly = false;
+  @property({ attribute: false })
+  pagePreset = pagePreset;
 
-  @property()
-  mouseMode: MouseMode = {
-    type: 'default',
+  @property({ attribute: false })
+  edgelessPreset = edgelessPreset;
+
+  @property({ attribute: false })
+  override autofocus = false;
+
+  @query('affine-default-page')
+  private _defaultPageBlock?: DefaultPageBlockComponent;
+
+  @query('affine-edgeless-page')
+  private _edgelessPageBlock?: EdgelessPageBlockComponent;
+
+  readonly themeObserver = new ThemeObserver();
+
+  fileDropManager = new FileDropManager(this._getPageInfo.bind(this));
+
+  get model(): PageBlockModel | null {
+    return this.page.root as PageBlockModel | null;
+  }
+
+  slots: AbstractEditor['slots'] = {
+    pageLinkClicked: new Slot(),
+    pageModeSwitched: new Slot(),
+    tagClicked: new Slot<{ tagId: string }>(),
   };
 
-  @state()
-  showGrid = false;
-
-  // TODO only select block
-  @state()
-  clipboard = new ClipboardManager(this, this);
-
-  @state()
-  contentParser = new ContentParser(this);
-
-  get model() {
-    return [this.page.root, this.page.surface] as [
-      PageBlockModel | null,
-      SurfaceBlockModel | null
-    ];
-  }
-
-  get pageBlockModel(): PageBlockModel | null {
-    return Array.isArray(this.model) ? this.model[0] : this.model;
-  }
-
-  get surfaceBlockModel(): SurfaceBlockModel | null {
-    return Array.isArray(this.model)
-      ? (this.model[1] as SurfaceBlockModel)
-      : null;
-  }
-
-  @query('.affine-block-placeholder-input')
-  private _placeholderInput!: HTMLInputElement;
-
-  private _disposables = new DisposableGroup();
-
-  override firstUpdated() {
-    // todo: refactor to a better solution
-    getServiceOrRegister('affine:code');
-  }
-
-  protected update(changedProperties: Map<string, unknown>) {
-    if (changedProperties.has('readonly')) {
-      this.page.awarenessStore.setReadonly(this.page, this.readonly);
-    }
-    super.update(changedProperties);
+  private _getPageInfo() {
+    const { page, mode } = this;
+    return {
+      page,
+      mode,
+      pageBlock:
+        mode === 'page' ? this._defaultPageBlock : this._edgelessPageBlock,
+    };
   }
 
   override connectedCallback() {
     super.connectedCallback();
-    this._disposables.add(
-      this.page.awarenessStore.signals.update.subscribe(
-        msg => msg.state?.flags.readonly[this.page.prefixedId],
-        rd => {
-          if (typeof rd === 'boolean' && rd !== this.readonly) {
-            this.readonly = rd;
-          }
-        },
-        {
-          filter: msg => msg.id === this.page.doc.clientID,
-        }
-      )
-    );
+    activeEditorManager.setIfNoActive(this);
+
+    const keydown = (e: KeyboardEvent) => {
+      if (e.altKey && e.metaKey && e.code === 'KeyC') {
+        e.preventDefault();
+      }
+
+      // `esc`  clear selection
+      if (e.code !== 'Escape') {
+        return;
+      }
+      const pageModel = this.model;
+      if (!pageModel) return;
+
+      if (this.mode === 'page') {
+        getPageBlock(pageModel)?.selection?.clear();
+      }
+
+      const selection = getSelection();
+      if (!selection || selection.isCollapsed || !checkEditorElementActive()) {
+        return;
+      }
+      selection.removeAllRanges();
+    };
 
     // Question: Why do we prevent this?
-    this._disposables.add(
-      Signal.disposableListener(window, 'keydown', e => {
-        if (e.altKey && e.metaKey && e.code === 'KeyC') {
-          e.preventDefault();
-        }
-
-        // `esc`  clear selection
-        if (e.code !== 'Escape') {
-          return;
-        }
-        const pageModel = this.pageBlockModel;
-        if (!pageModel) return;
-        const pageBlock = getDefaultPageBlock(pageModel);
-        pageBlock.selection.clearRects();
-
-        const selection = getSelection();
-        if (
-          !selection ||
-          selection.isCollapsed ||
-          !checkEditorElementActive()
-        ) {
-          return;
-        }
-        selection.removeAllRanges();
-      })
-    );
+    if (isFirefox) {
+      this._disposables.addFromEvent(document.body, 'keydown', keydown);
+    } else {
+      this._disposables.addFromEvent(window, 'keydown', keydown);
+    }
 
     if (!this.page) {
       throw new Error('Missing page for EditorContainer!');
     }
 
     // connect mouse mode event changes
-    this._disposables.add(
-      Signal.disposableListener(
-        window,
-        'affine.switch-mouse-mode',
-        ({ detail }) => {
-          this.mouseMode = detail;
-        }
-      )
-    );
-
-    this._disposables.add(
-      Signal.disposableListener(
-        window,
-        'affine:switch-edgeless-display-mode',
-        ({ detail }) => {
-          this.showGrid = detail;
-        }
-      )
-    );
+    // this._disposables.addFromEvent(
+    //   window,
+    //   'affine.switch-mouse-mode',
+    //   ({ detail }) => {
+    //     this.edgelessTool = detail;
+    //   }
+    // );
 
     // subscribe store
     this._disposables.add(
-      this.page.signals.rootAdded.on(() => {
-        this.requestUpdate();
+      this.page.slots.rootAdded.on(() => {
+        // add the 'page' as requesting property to
+        // make sure the `forwardSlot` is called in `updated` lifecycle
+        this.requestUpdate('page');
+      })
+    );
+    this._disposables.add(
+      this.page.slots.blockUpdated.on(async ({ type, id }) => {
+        const block = this.page.getBlockById(id);
+
+        if (!block) return;
+
+        if (type === 'update') {
+          const service = await getServiceOrRegister(block.flavour);
+          service.updateEffect(block);
+        }
       })
     );
 
-    this._placeholderInput?.focus();
-  }
+    this._disposables.addFromEvent(
+      this,
+      'dragover',
+      this.fileDropManager.onDragOver
+    );
+    this._disposables.addFromEvent(this, 'drop', this.fileDropManager.onDrop);
 
-  public async createBlockHub() {
-    await this.updateComplete;
-    return createBlockHub(this, this.page);
+    this.themeObserver.observer(document.documentElement);
+    this._disposables.add(this.themeObserver);
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    this.page.awarenessStore.setLocalCursor(this.page, null);
-    this._disposables.dispose();
+    activeEditorManager.clearActive();
+    this.page.awarenessStore.setLocalRange(this.page, null);
   }
 
-  render() {
+  override firstUpdated() {
+    // todo: refactor to a better solution
+    getServiceOrRegister('affine:code');
+    if (this.mode === 'page') {
+      setTimeout(() => {
+        if (this.autofocus) {
+          this._defaultPageBlock?.titleVEditor.focusEnd();
+        }
+      });
+    }
+
+    // adds files from outside by dragging and dropping
+    this.fileDropManager.register('image/*', async (file: File) => {
+      const storage = this.page.blobs;
+      assertExists(storage);
+      const sourceId = await storage.set(file);
+      const size = this.mode === 'edgeless' ? await readImageSize(file) : {};
+      return {
+        flavour: 'affine:image',
+        sourceId,
+        ...size,
+      };
+    });
+  }
+
+  override updated(changedProperties: Map<string, unknown>) {
+    if (changedProperties.has('mode')) {
+      this.slots.pageModeSwitched.emit(this.mode);
+      if (this.mode === 'page') {
+        this._saveViewportLocalRecord();
+      }
+    }
+
+    if (!changedProperties.has('page') && !changedProperties.has('mode')) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      if (this._defaultPageBlock) {
+        forwardSlot(this._defaultPageBlock.slots, this.slots);
+      }
+      if (this._edgelessPageBlock) {
+        forwardSlot(this._edgelessPageBlock.slots, this.slots);
+      }
+    });
+  }
+
+  async createBlockHub() {
+    await this.updateComplete;
+    if (!this.page.root) {
+      await new Promise(res => this.page.slots.rootAdded.once(res));
+    }
+    return createBlockHub(this, this.page);
+  }
+
+  private _saveViewportLocalRecord() {
+    const edgelessPage = this.querySelector('affine-edgeless-page');
+    if (edgelessPage) {
+      const { viewport } = edgelessPage.surface;
+      sessionStorage.setItem(
+        'blocksuite:' + this.page.id + ':edgelessViewport',
+        JSON.stringify({ ...viewport.center, zoom: viewport.zoom })
+      );
+    }
+  }
+
+  createContentParser() {
+    return new ContentParser(this.page);
+  }
+
+  override render() {
     if (!this.model) return null;
 
-    const pageContainer = html`
-      <affine-default-page
-        .mouseRoot=${this as HTMLElement}
+    const rootContainer = keyed(
+      this.model.id,
+      html`<block-suite-root
         .page=${this.page}
-        .model=${this.pageBlockModel as PageBlockModel}
-        .readonly=${this.readonly}
-      ></affine-default-page>
-    `;
+        .blocks=${this.mode === 'page' ? pagePreset : edgelessPreset}
+      ></block-suite-root>`
+    );
 
-    const edgelessContainer = html`
-      <affine-edgeless-page
-        .mouseRoot=${this as HTMLElement}
-        .page=${this.page}
-        .pageModel=${this.pageBlockModel as PageBlockModel}
-        .surfaceModel=${this.surfaceBlockModel as SurfaceBlockModel}
-        .mouseMode=${this.mouseMode}
-        .readonly=${this.readonly}
-        .showGrid=${this.showGrid}
-      ></affine-edgeless-page>
-    `;
-
-    const blockRoot = html`
-      ${choose(this.mode, [
-        ['page', () => pageContainer],
-        ['edgeless', () => edgelessContainer],
-      ])}
+    const remoteSelectionContainer = html`
+      <remote-selection .page=${this.page}></remote-selection>
     `;
 
     return html`
       <style>
+        editor-container * {
+          box-sizing: border-box;
+        }
+        editor-container,
         .affine-editor-container {
+          display: block;
           height: 100%;
           position: relative;
-          overflow-y: auto;
-          overflow-x: hidden;
+          overflow: hidden;
+          font-family: var(--affine-font-family);
+          background: var(--affine-background-primary-color);
+        }
+        @media print {
+          editor-container,
+          .affine-editor-container {
+            height: auto;
+          }
         }
       </style>
-      <div class="affine-editor-container">${blockRoot}</div>
+      ${rootContainer} ${remoteSelectionContainer}
     `;
   }
 }

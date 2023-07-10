@@ -1,4 +1,9 @@
-import { ConfirmIcon, EditIcon, UnlinkIcon } from '@blocksuite/global/config';
+import {
+  ConfirmIcon,
+  EditIcon,
+  LinkToCardIcon,
+  UnlinkIcon,
+} from '@blocksuite/global/config';
 import { html, LitElement, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 
@@ -64,7 +69,7 @@ const URL_REGEX = new RegExp(
   'i'
 );
 
-function normalizeUrl(url: string) {
+export function normalizeUrl(url: string) {
   const hasScheme = ALLOWED_SCHEMES.some(scheme =>
     url.startsWith(scheme + ':')
   );
@@ -81,7 +86,7 @@ function normalizeUrl(url: string) {
 /**
  * For more detail see https://www.ietf.org/rfc/rfc1738.txt
  */
-const isValidLink = (str: string) => {
+export const isValidLink = (str: string) => {
   if (!str) {
     return false;
   }
@@ -95,7 +100,7 @@ const isValidLink = (str: string) => {
 
 @customElement('edit-link-panel')
 export class LinkPopover extends LitElement {
-  static styles = linkPopoverStyle;
+  static override styles = linkPopoverStyle;
 
   @property()
   left = '0';
@@ -106,7 +111,7 @@ export class LinkPopover extends LitElement {
   @property()
   type: 'create' | 'edit' = 'create';
 
-  @property()
+  @property({ type: Boolean })
   showMask = true;
 
   @property()
@@ -115,14 +120,14 @@ export class LinkPopover extends LitElement {
   @property()
   previewLink = '';
 
-  @state()
-  link = '';
+  @property({ type: Boolean })
+  showBookmarkOperation = false;
 
   @state()
-  bodyOverflowStyle = '';
+  private _bodyOverflowStyle = '';
 
   @state()
-  disableConfirm = true;
+  private _disableConfirm = true;
 
   @query('#text-input')
   textInput: HTMLInputElement | undefined;
@@ -138,7 +143,7 @@ export class LinkPopover extends LitElement {
 
     if (this.showMask) {
       // Disable body scroll
-      this.bodyOverflowStyle = document.body.style.overflow;
+      this._bodyOverflowStyle = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
     }
   }
@@ -156,7 +161,7 @@ export class LinkPopover extends LitElement {
 
     if (this.showMask) {
       // Restore body scroll style
-      document.body.style.overflow = this.bodyOverflowStyle;
+      document.body.style.overflow = this._bodyOverflowStyle;
     }
   }
 
@@ -169,7 +174,7 @@ export class LinkPopover extends LitElement {
   }
 
   private _onConfirm() {
-    if (this.disableConfirm) {
+    if (this._disableConfirm) {
       return;
     }
     if (!this.linkInput) {
@@ -200,27 +205,40 @@ export class LinkPopover extends LitElement {
     this.dispatchEvent(createEvent('updateLink', { type: 'remove' }));
   }
 
-  private _onEdit(e: MouseEvent) {
-    this.dispatchEvent(createEvent('editLink', null));
-    this.disableConfirm = false;
+  private _onLinkToCard(e: MouseEvent) {
+    this.dispatchEvent(
+      new CustomEvent<LinkDetail>('updateLink', {
+        detail: { type: 'toBookmark' },
+      })
+    );
   }
 
-  private _onKeyup(e: KeyboardEvent) {
-    if (e.key === 'Enter') {
-      this._onConfirm();
-    }
+  private _onEdit(e: MouseEvent) {
+    this.dispatchEvent(createEvent('editLink', null));
+    this._disableConfirm = false;
+  }
+
+  private _onInput(e: InputEvent) {
     if (!this.linkInput) {
       throw new Error('Failed to update link! Link input not found!');
     }
     const isValid = isValidLink(this.linkInput.value);
-    this.disableConfirm = isValid ? false : true;
+    this._disableConfirm = isValid ? false : true;
+  }
+
+  private _onKeydown(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      this._onConfirm();
+    }
     return;
   }
 
   confirmBtnTemplate() {
     return html`<icon-button
       class="affine-confirm-button"
-      ?disabled=${this.disableConfirm}
+      ?disabled=${this._disableConfirm}
       @click=${this._onConfirm}
       >${ConfirmIcon}</icon-button
     >`;
@@ -235,7 +253,8 @@ export class LinkPopover extends LitElement {
         spellcheck="false"
         placeholder="Paste or type a link"
         value=${this.previewLink}
-        @keyup=${this._onKeyup}
+        @keydown=${this._onKeydown}
+        @input=${this._onInput}
       />
       <span class="affine-link-popover-dividing-line"></span>
       ${this.confirmBtnTemplate()}
@@ -246,9 +265,20 @@ export class LinkPopover extends LitElement {
     return html`<div class="affine-link-popover">
       <div class="affine-link-preview has-tool-tip" @click=${this._onCopy}>
         <tool-tip inert role="tooltip">Click to copy link</tool-tip>
-        ${this.previewLink}
+        <span style="overflow: hidden;">${this.previewLink}</span>
       </div>
       <span class="affine-link-popover-dividing-line"></span>
+      ${this.showBookmarkOperation
+        ? html`<icon-button
+              class="has-tool-tip"
+              data-testid="unlink"
+              @click=${this._onLinkToCard}
+            >
+              ${LinkToCardIcon}
+              <tool-tip inert role="tooltip">Turn into Card view</tool-tip>
+            </icon-button>
+            <span class="affine-link-popover-dividing-line"></span>`
+        : ''}
       <icon-button
         class="has-tool-tip"
         data-testid="unlink"
@@ -257,13 +287,14 @@ export class LinkPopover extends LitElement {
         ${UnlinkIcon}
         <tool-tip inert role="tooltip">Remove</tool-tip>
       </icon-button>
+
       <icon-button
         class="has-tool-tip"
         data-testid="edit"
         @click=${this._onEdit}
       >
         ${EditIcon}
-        <tool-tip inert role="tooltip">Edit link</tool-tip>
+        <tool-tip inert role="tooltip">Edit</tool-tip>
       </icon-button>
     </div>`;
   }
@@ -294,7 +325,7 @@ export class LinkPopover extends LitElement {
           type="text"
           placeholder="Enter text"
           value=${this.text}
-          @keyup=${this._onKeyup}
+          @keydown=${this._onKeydown}
         />
         <span class="affine-link-popover-dividing-line"></span>
         <label class="affine-edit-text-text" for="text-input">Text</label>
@@ -307,7 +338,7 @@ export class LinkPopover extends LitElement {
           spellcheck="false"
           placeholder="Paste or type a link"
           value=${this.previewLink}
-          @keyup=${this._onKeyup}
+          @keydown=${this._onKeydown}
         />
         <span class="affine-link-popover-dividing-line"></span>
         <label class="affine-edit-link-text" for="link-input">Link</label>
@@ -316,7 +347,7 @@ export class LinkPopover extends LitElement {
     </div>`;
   }
 
-  render() {
+  override render() {
     const mask = this.showMask
       ? html`<div class="overlay-mask" @click="${this._hide}"></div>`
       : html``;
@@ -339,7 +370,6 @@ export class LinkPopover extends LitElement {
   }
 }
 
-// TODO use signal to control the popover
 declare global {
   interface HTMLElementTagNameMap {
     'edit-link-panel': LinkPopover;
@@ -351,6 +381,7 @@ declare global {
 }
 
 export type LinkDetail =
+  | { type: 'toBookmark' }
   | { type: 'cancel' }
   | { type: 'confirm'; link: string; text?: string }
   | { type: 'remove' };

@@ -1,19 +1,38 @@
 /* eslint-disable @typescript-eslint/no-restricted-imports */
 import '../declare-test-window.js';
 
-import { getDefaultPlaygroundURL } from '@blocksuite/global/utils';
-import { ConsoleMessage, expect, Page } from '@playwright/test';
-
 import type {
-  BaseBlockModel,
-  Page as StorePage,
-} from '../../../packages/store/src/index.js';
-import { pressEnter, pressTab, SHORT_KEY, type } from './keyboard.js';
+  CssVariableName,
+  ListType,
+  PageBlockModel,
+  ThemeObserver,
+} from '@blocksuite/blocks';
+import { assertExists } from '@blocksuite/global/utils';
+import type { ConsoleMessage, Locator, Page } from '@playwright/test';
+import { expect } from '@playwright/test';
+
+import type { RichText } from '../../../packages/playground/examples/virgo/test-page.js';
+import { type BaseBlockModel } from '../../../packages/store/src/index.js';
+import { currentEditorIndex, multiEditor } from '../multiple-editor.js';
+import {
+  pressEnter,
+  pressSpace,
+  pressTab,
+  SHORT_KEY,
+  type,
+} from './keyboard.js';
+
+declare global {
+  interface WindowEventMap {
+    'blocksuite:page-ready': CustomEvent<string>;
+  }
+}
+
+export const defaultPlaygroundURL = new URL(`http://localhost:5173/`);
 
 const NEXT_FRAME_TIMEOUT = 100;
-const DEFAULT_PLAYGROUND = getDefaultPlaygroundURL(!!process.env.CI).toString();
-const RICH_TEXT_SELECTOR = '.ql-editor';
-const TITLE_SELECTOR = '.affine-default-page-block-title';
+const DEFAULT_PLAYGROUND = defaultPlaygroundURL.toString();
+const RICH_TEXT_SELECTOR = '.virgo-editor';
 
 function shamefullyIgnoreConsoleMessage(message: ConsoleMessage): boolean {
   if (!process.env.CI) {
@@ -22,10 +41,6 @@ function shamefullyIgnoreConsoleMessage(message: ConsoleMessage): boolean {
   const ignoredMessages = [
     // basic.spec.ts
     "Caught error while handling a Yjs update TypeError: Cannot read properties of undefined (reading 'toJSON')",
-    // embed.spec.ts
-    'Failed to load resource: the server responded with a status of 404 (Not Found)',
-    // embed.spec.ts
-    'Error while getting blob HTTPError: Request failed with status code 404 Not Found',
     // clipboard.spec.ts
     "TypeError: Cannot read properties of null (reading 'model')",
     // basic.spec.ts › should readonly mode not be able to modify text
@@ -33,8 +48,14 @@ function shamefullyIgnoreConsoleMessage(message: ConsoleMessage): boolean {
     // Firefox warn on quill
     // See https://github.com/quilljs/quill/issues/2030
     '[JavaScript Warning: "Use of Mutation Events is deprecated. Use MutationObserver instead."',
-    // Fixme: https://github.com/toeverything/blocksuite/issues/1126
-    'Failed to clean slash search text!',
+    "addRange(): The given range isn't in document.",
+    //#region embed.spec.ts
+    'Failed to load resource: the server responded with a status of 404 (Not Found)',
+    'Error while getting blob HTTPError: Request failed with status code 404 Not Found',
+    'Error: Failed to fetch blob',
+    'Error: Cannot find blob',
+    'Cannot find blob',
+    //#endregion
   ];
   return ignoredMessages.some(msg => message.text().startsWith(msg));
 }
@@ -43,70 +64,141 @@ function generateRandomRoomId() {
   return `playwright-${Math.random().toFixed(8).substring(2)}`;
 }
 
+export const getSelectionRect = async (page: Page): Promise<DOMRect> => {
+  const rect = await page.evaluate(() => {
+    return getSelection()?.getRangeAt(0).getBoundingClientRect();
+  });
+  assertExists(rect);
+  return rect;
+};
+
 /**
  * @example
  * ```ts
  * await initEmptyEditor(page, { enable_some_flag: true });
  * ```
  */
-async function initEmptyEditor(
-  page: Page,
-  flags: Partial<BlockSuiteFlags> = {}
-) {
-  await page.evaluate(flags => {
-    const { workspace } = window;
+async function initEmptyEditor({
+  page,
+  flags = {},
+  noInit = false,
+  multiEditor = false,
+}: {
+  page: Page;
+  flags?: Partial<BlockSuiteFlags>;
+  noInit?: boolean;
+  multiEditor?: boolean;
+}) {
+  await page.evaluate(
+    ([flags, noInit, multiEditor]) => {
+      const { workspace } = window;
 
-    workspace.signals.pageAdded.once(async pageId => {
-      const page = workspace.getPage(pageId) as StorePage;
-      for (const [key, value] of Object.entries(flags)) {
-        page.awarenessStore.setFlag(key as keyof typeof flags, value);
+      async function initPage(page: ReturnType<typeof workspace.createPage>) {
+        page.waitForLoaded();
+        for (const [key, value] of Object.entries(flags)) {
+          page.awarenessStore.setFlag(key as keyof typeof flags, value);
+        }
+        // add app root from https://github.com/toeverything/blocksuite/commit/947201981daa64c5ceeca5fd549460c34e2dabfa
+        const appRoot = document.querySelector('#app');
+        if (!appRoot) {
+          throw new Error('Cannot find app root element(#app).');
+        }
+        const createEditor = () => {
+          const editor = document.createElement('editor-container');
+          editor.page = page;
+          editor.autofocus = true;
+          editor.slots.pageLinkClicked.on(({ pageId }) => {
+            const newPage = workspace.getPage(pageId);
+            if (!newPage) {
+              throw new Error(`Failed to jump to page ${pageId}`);
+            }
+            editor.page = newPage;
+          });
+          appRoot.append(editor);
+          editor.createBlockHub().then(blockHub => {
+            document.body.appendChild(blockHub);
+          });
+          return editor;
+        };
+        const editor = createEditor();
+        if (multiEditor) {
+          createEditor();
+        }
+        const debugMenu = document.createElement('debug-menu');
+        debugMenu.workspace = workspace;
+        debugMenu.editor = editor;
+        document.body.appendChild(debugMenu);
+        window.debugMenu = debugMenu;
+        window.editor = editor;
+        window.page = page;
+        window.dispatchEvent(
+          new CustomEvent('blocksuite:page-ready', { detail: page.id })
+        );
       }
 
-      const editor = document.createElement('editor-container');
-      editor.page = page;
-
-      const debugMenu = document.createElement('debug-menu');
-      debugMenu.workspace = workspace;
-      debugMenu.editor = editor;
-
-      document.body.appendChild(editor);
-      document.body.appendChild(debugMenu);
-      const blockHub = await editor.createBlockHub();
-      document.body.appendChild(blockHub);
-
-      window.debugMenu = debugMenu;
-      window.editor = editor;
-      window.page = page;
-    });
-
-    workspace.createPage('page0');
-  }, flags);
+      if (noInit) {
+        workspace.meta.pageMetas.forEach(meta => {
+          const pageId = meta.id;
+          const page = workspace.getPage(pageId);
+          if (page) {
+            initPage(page);
+          }
+        });
+        workspace.slots.pageAdded.on(pageId => {
+          const page = workspace.getPage(pageId);
+          if (!page) {
+            throw new Error(`Failed to get page ${pageId}`);
+          }
+          initPage(page);
+        });
+      } else {
+        const page = workspace.createPage({ id: 'page0' });
+        page.waitForLoaded().then(() => {
+          initPage(page);
+        });
+      }
+    },
+    [flags, noInit, multiEditor] as const
+  );
   await waitNextFrame(page);
 }
 
+export const getEditorLocator = (page: Page) => {
+  return page.locator('editor-container').nth(currentEditorIndex);
+};
+export const getBlockHub = (page: Page) => {
+  return page.locator('affine-block-hub').nth(currentEditorIndex);
+};
+
 export async function enterPlaygroundRoom(
   page: Page,
-  flags?: Partial<BlockSuiteFlags>,
-  room?: string
+  ops?: {
+    flags?: Partial<BlockSuiteFlags>;
+    room?: string;
+    blobStorage?: ('memory' | 'idb' | 'mock')[];
+    noInit?: boolean;
+  }
 ) {
   const url = new URL(DEFAULT_PLAYGROUND);
+  let room = ops?.room;
+  const blobStorage = ops?.blobStorage;
   if (!room) {
     room = generateRandomRoomId();
   }
   url.searchParams.set('room', room);
+  url.searchParams.set('blobStorage', blobStorage?.join(',') || 'idb');
   await page.goto(url.toString());
-  await page.evaluate(() => {
-    if (typeof window.$blocksuite !== 'object') {
-      throw new Error('window.$blocksuite is not object');
-    }
-  }, []);
+  const readyPromise = waitForPageReady(page);
 
   // See https://github.com/microsoft/playwright/issues/5546
   // See https://github.com/microsoft/playwright/discussions/17813
   page.on('console', message => {
     const ignore = shamefullyIgnoreConsoleMessage(message);
     if (!ignore) {
-      throw new Error('Unexpected console message: ' + message.text());
+      expect('Unexpected console message: ' + message.text()).toBe(
+        'Please remove the "console.log" statements from the code. It is advised not to output logs in a production environment.'
+      );
+      // throw new Error('Unexpected console message: ' + message.text());
     }
     if (message.type() === 'warning') {
       console.warn(message.text());
@@ -116,7 +208,25 @@ export async function enterPlaygroundRoom(
     }
   });
 
-  await initEmptyEditor(page, flags);
+  // Log all uncaught errors
+  page.on('pageerror', exception => {
+    throw new Error(`Uncaught exception: "${exception}"\n${exception.stack}`);
+  });
+
+  await initEmptyEditor({
+    page,
+    flags: ops?.flags,
+    noInit: ops?.noInit,
+    multiEditor,
+  });
+
+  await readyPromise;
+
+  await page.evaluate(() => {
+    if (typeof window.$blocksuite !== 'object') {
+      throw new Error('window.$blocksuite is not object');
+    }
+  }, []);
   return room;
 }
 
@@ -128,24 +238,22 @@ export async function waitEmbedLoaded(page: Page) {
   await page.waitForSelector('.resizable-img');
 }
 
-export async function waitNextFrame(page: Page) {
-  await page.waitForTimeout(NEXT_FRAME_TIMEOUT);
+export async function waitNextFrame(
+  page: Page,
+  frameTimeout = NEXT_FRAME_TIMEOUT
+) {
+  await page.waitForTimeout(frameTimeout);
 }
 
-export async function waitForRemoteUpdateSignal(page: Page) {
-  return page.evaluate(() => {
-    return new Promise<void>(resolve => {
-      const DebugDocProvider = window.$blocksuite.store.DebugDocProvider;
-      const debugProvider = window.workspace.providers.find(
-        provider => provider instanceof DebugDocProvider
-      ) as InstanceType<typeof DebugDocProvider>;
-      const callback = window.$blocksuite.blocks.debounce(() => {
-        disposable.dispose();
-        resolve();
-      }, 500);
-      const disposable = debugProvider.remoteUpdateSignal.on(callback);
-    });
-  });
+export async function waitForPageReady(page: Page) {
+  await page.evaluate(
+    () =>
+      new Promise<void>(resolve => {
+        window.addEventListener('blocksuite:page-ready', () => resolve(), {
+          once: true,
+        });
+      })
+  );
 }
 
 export async function clearLog(page: Page) {
@@ -166,99 +274,231 @@ export async function resetHistory(page: Page) {
 }
 
 // XXX: This doesn't add surface yet, the page state should not be switched to edgeless.
-export async function enterPlaygroundWithList(page: Page) {
+export async function enterPlaygroundWithList(
+  page: Page,
+  contents: string[] = ['', '', ''],
+  type: ListType = 'bulleted'
+) {
   const room = generateRandomRoomId();
   await page.goto(`${DEFAULT_PLAYGROUND}?room=${room}`);
-  await initEmptyEditor(page);
+  await initEmptyEditor({ page });
 
-  await page.evaluate(() => {
-    const { page } = window;
-    const pageId = page.addBlockByFlavour('affine:page');
-    const frameId = page.addBlockByFlavour('affine:frame', {}, pageId);
-    for (let i = 0; i < 3; i++) {
-      page.addBlockByFlavour('affine:list', {}, frameId);
-    }
-  });
+  await page.evaluate(
+    async ({ contents, type }: { contents: string[]; type: ListType }) => {
+      const { page } = window;
+      await page.waitForLoaded();
+
+      const pageId = page.addBlock('affine:page', {
+        title: new page.Text(),
+      });
+      const noteId = page.addBlock('affine:note', {}, pageId);
+      for (let i = 0; i < contents.length; i++) {
+        page.addBlock(
+          'affine:list',
+          contents.length > 0
+            ? { text: new page.Text(contents[i]), type }
+            : { type },
+          noteId
+        );
+      }
+    },
+    { contents, type }
+  );
   await waitNextFrame(page);
 }
 
 // XXX: This doesn't add surface yet, the page state should not be switched to edgeless.
 export async function initEmptyParagraphState(page: Page, pageId?: string) {
-  const ids = await page.evaluate(pageId => {
+  const ids = await page.evaluate(async pageId => {
     const { page } = window;
+    await page.waitForLoaded();
     page.captureSync();
 
     if (!pageId) {
-      pageId = page.addBlockByFlavour('affine:page');
+      pageId = page.addBlock('affine:page', {
+        title: new page.Text(),
+      });
     }
 
-    const frameId = page.addBlockByFlavour('affine:frame', {}, pageId);
-    const paragraphId = page.addBlockByFlavour('affine:paragraph', {}, frameId);
+    const noteId = page.addBlock('affine:note', {}, pageId);
+    const paragraphId = page.addBlock('affine:paragraph', {}, noteId);
+    // page.addBlock('affine:surface', {}, pageId);
     page.captureSync();
-    return { pageId, frameId, paragraphId };
+    return { pageId, noteId, paragraphId };
   }, pageId);
   return ids;
 }
 
 export async function initEmptyEdgelessState(page: Page) {
-  const ids = await page.evaluate(() => {
+  const ids = await page.evaluate(async () => {
     const { page } = window;
+    await page.waitForLoaded();
 
-    const pageId = page.addBlockByFlavour('affine:page');
-    page.addBlockByFlavour('affine:surface', {}, null);
-    const frameId = page.addBlockByFlavour('affine:frame', {}, pageId);
-    const paragraphId = page.addBlockByFlavour('affine:paragraph', {}, frameId);
+    const pageId = page.addBlock('affine:page', {
+      title: new page.Text(),
+    });
+    page.addBlock('affine:surface', {}, pageId);
+    const noteId = page.addBlock('affine:note', {}, pageId);
+    const paragraphId = page.addBlock('affine:paragraph', {}, noteId);
     page.resetHistory();
 
-    return { pageId, frameId, paragraphId };
+    return { pageId, noteId, paragraphId };
   });
   return ids;
 }
 
 export async function initEmptyDatabaseState(page: Page, pageId?: string) {
-  const ids = await page.evaluate(pageId => {
+  const ids = await page.evaluate(async pageId => {
     const { page } = window;
+    await page.waitForLoaded();
+
     page.captureSync();
     if (!pageId) {
-      pageId = page.addBlockByFlavour('affine:page');
+      pageId = page.addBlock('affine:page', {
+        title: new page.Text(),
+      });
     }
-    const frameId = page.addBlockByFlavour('affine:frame', {}, pageId);
-    const paragraphId = page.addBlockByFlavour(
+    const noteId = page.addBlock('affine:note', {}, pageId);
+    const paragraphId = page.addBlock(
       'affine:database',
       {
-        title: 'Database 1',
+        title: new page.Text('Database 1'),
+        titleColumnName: 'Title',
       },
-      frameId
+      noteId
     );
     page.captureSync();
-    return { pageId, frameId, paragraphId };
+    return { pageId, noteId, paragraphId };
   }, pageId);
   return ids;
 }
 
-export async function initEmptyCodeBlockState(page: Page) {
-  const ids = await page.evaluate(() => {
+export async function initEmptyDatabaseWithParagraphState(
+  page: Page,
+  pageId?: string
+) {
+  const ids = await page.evaluate(async pageId => {
     const { page } = window;
+    await page.waitForLoaded();
+
     page.captureSync();
-    const pageId = page.addBlock({ flavour: 'affine:page' });
-    const frameId = page.addBlock({ flavour: 'affine:frame' }, pageId);
-    const codeBlockId = page.addBlock({ flavour: 'affine:code' }, frameId);
+    if (!pageId) {
+      pageId = page.addBlock('affine:page', {
+        title: new page.Text(),
+      });
+    }
+    const noteId = page.addBlock('affine:note', {}, pageId);
+    const databaseId = page.addBlock(
+      'affine:database',
+      {
+        title: new page.Text('Database 1'),
+        titleColumnName: 'Title',
+      },
+      noteId
+    );
+    page.addBlock('affine:paragraph', {}, noteId);
     page.captureSync();
-    return { pageId, frameId, codeBlockId };
+    return { pageId, noteId, databaseId };
+  }, pageId);
+  return ids;
+}
+
+export async function initDatabaseRow(page: Page) {
+  const editor = getEditorLocator(page);
+  const footer = editor.locator('.affine-database-block-footer');
+  const box = await footer.boundingBox();
+  if (!box) throw new Error('Missing database footer rect');
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const columnAddBtn = editor.locator(
+    '[data-test-id="affine-database-add-row-button"]'
+  );
+  await columnAddBtn.click();
+}
+
+export async function initDatabaseRowWithData(page: Page, data: string) {
+  await initDatabaseRow(page);
+
+  const lastRow = page.locator('.affine-database-block-row').last();
+  const cell = lastRow.locator('affine-paragraph');
+  await cell.click();
+  await type(page, data);
+}
+
+export async function initDatabaseDynamicRowWithData(
+  page: Page,
+  data: string,
+  addRow = false,
+  index = 0
+) {
+  const editor = getEditorLocator(page);
+  if (addRow) {
+    await initDatabaseRow(page);
+  }
+  const lastRow = editor.locator('.affine-database-block-row').last();
+  const cell = lastRow.locator('.database-cell').nth(index + 1);
+  await cell.click();
+  await type(page, data);
+  await pressEnter(page);
+}
+
+export async function focusDatabaseTitle(page: Page) {
+  const dbTitle = page.locator('[data-block-is-database-title="true"]');
+  await dbTitle.click();
+}
+
+export async function assertDatabaseColumnOrder(page: Page, order: string[]) {
+  const columns = await page
+    .locator('affine-database-column-header')
+    .locator('affine-database-header-column')
+    .all();
+  expect(await Promise.all(columns.slice(1).map(v => v.innerText()))).toEqual(
+    order
+  );
+}
+
+export async function initEmptyCodeBlockState(page: Page) {
+  const ids = await page.evaluate(async () => {
+    const { page } = window;
+    await page.waitForLoaded();
+
+    page.captureSync();
+    const pageId = page.addBlock('affine:page');
+    const noteId = page.addBlock('affine:note', {}, pageId);
+    const codeBlockId = page.addBlock('affine:code', {}, noteId);
+    page.captureSync();
+    return { pageId, noteId, codeBlockId };
   });
   await page.waitForSelector(`[data-block-id="${ids.codeBlockId}"] rich-text`);
   return ids;
 }
 
-export async function focusTitle(page: Page) {
-  const locator = page.locator(TITLE_SELECTOR);
-  await locator.click();
+type FocusRichTextOptions = {
+  clickPosition?: { x: number; y: number };
+};
+
+export async function focusRichText(
+  page: Page,
+  i = 0,
+  options?: FocusRichTextOptions
+) {
+  await page.mouse.move(0, 0);
+  const editor = getEditorLocator(page);
+  const locator = editor.locator(RICH_TEXT_SELECTOR).nth(i);
+  // need to set `force` to true when clicking on `affine-selected-blocks`
+  await locator.click({ force: true, position: options?.clickPosition });
 }
 
-export async function focusRichText(page: Page, i = 0) {
-  await page.mouse.move(0, 0);
-  const locator = page.locator(RICH_TEXT_SELECTOR).nth(i);
-  await locator.click();
+export async function focusRichTextEnd(page: Page, i = 0) {
+  await page.evaluate(
+    ([i, editorIndex]) => {
+      const editor = document.querySelectorAll('editor-container')[i];
+      const richTexts = Array.from(editor.querySelectorAll('rich-text'));
+
+      richTexts[i].vEditor?.focusEnd();
+    },
+    [i, currentEditorIndex]
+  );
+  await waitNextFrame(page);
 }
 
 export async function initThreeParagraphs(page: Page) {
@@ -268,12 +508,13 @@ export async function initThreeParagraphs(page: Page) {
   await type(page, '456');
   await pressEnter(page);
   await type(page, '789');
+  await resetHistory(page);
 }
 
 export async function initThreeLists(page: Page) {
   await focusRichText(page);
   await type(page, '-');
-  await page.keyboard.press('Space', { delay: 50 });
+  await pressSpace(page);
   await type(page, '123');
   await pressEnter(page);
   await type(page, '456');
@@ -285,7 +526,7 @@ export async function initThreeLists(page: Page) {
 export async function insertThreeLevelLists(page: Page, i = 0) {
   await focusRichText(page, i);
   await type(page, '-');
-  await page.keyboard.press('Space', { delay: 50 });
+  await pressSpace(page);
   await type(page, '123');
   await pressEnter(page);
   await pressTab(page);
@@ -300,46 +541,71 @@ export async function initThreeDividers(page: Page) {
   await type(page, '123');
   await pressEnter(page);
   await type(page, '---');
-  await page.keyboard.press('Space', { delay: 50 });
+  await pressSpace(page);
   await type(page, '---');
-  await page.keyboard.press('Space', { delay: 50 });
+  await pressSpace(page);
   await type(page, '---');
-  await page.keyboard.press('Space', { delay: 50 });
+  await pressSpace(page);
   await type(page, '123');
 }
 
-export async function getQuillSelectionIndex(page: Page) {
+export async function getVirgoSelectionIndex(page: Page) {
   return await page.evaluate(() => {
     const selection = window.getSelection() as Selection;
 
     const range = selection.getRangeAt(0);
     const component = range.startContainer.parentElement?.closest('rich-text');
-    const index = component?.quill?.getSelection()?.index;
+    const index = component?.vEditor?.getVRange()?.index;
     return index !== undefined ? index : -1;
   });
 }
 
-export async function getQuillSelectionText(page: Page) {
+export async function getVirgoSelectionText(page: Page) {
   return await page.evaluate(() => {
     const selection = window.getSelection() as Selection;
     const range = selection.getRangeAt(0);
     const component = range.startContainer.parentElement?.closest('rich-text');
-    return component?.quill?.getText() || '';
+    return component?.vEditor?.yText.toString() ?? '';
   });
 }
 
-export async function getSelectedTextByQuill(page: Page) {
+export async function getSelectedTextByVirgo(page: Page) {
   return await page.evaluate(() => {
     const selection = window.getSelection() as Selection;
     const range = selection.getRangeAt(0);
     const component = range.startContainer.parentElement?.closest('rich-text');
-    // @ts-expect-error
-    const { index, length } = component.quill.getSelection();
-    return component?.quill?.getText(index, length) || '';
+
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const { index, length } = component!.vEditor!.getVRange()!;
+    return component?.vEditor?.yText.toString().slice(index, length) || '';
   });
 }
 
-export async function setQuillSelection(
+export async function getSelectedText(page: Page) {
+  return await page.evaluate(() => {
+    let content = '';
+    const selection = window.getSelection() as Selection;
+
+    if (selection.rangeCount === 0) return content;
+
+    const range = selection.getRangeAt(0);
+    const components =
+      range.commonAncestorContainer.parentElement?.querySelectorAll(
+        'rich-text'
+      ) || [];
+
+    components.forEach(component => {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const { index, length } = component!.vEditor!.getVRange()!;
+      content +=
+        component?.vEditor?.yText.toString().slice(index, index + length) || '';
+    });
+
+    return content;
+  });
+}
+
+export async function setVirgoSelection(
   page: Page,
   index: number,
   length: number
@@ -351,7 +617,10 @@ export async function setQuillSelection(
       const range = selection.getRangeAt(0);
       const component =
         range.startContainer.parentElement?.closest('rich-text');
-      component?.quill?.setSelection(index, length);
+      component?.vEditor?.setVRange({
+        index,
+        length,
+      });
     },
     { index, length }
   );
@@ -363,39 +632,34 @@ export async function pasteContent(
 ) {
   await page.evaluate(
     ({ clipData }) => {
-      const e = {
-        target: document.body,
-        preventDefault: () => null,
-        stopPropagation: () => null,
-        clipboardData: {
-          types: Object.keys(clipData),
-          getData: (mime: string) => {
-            return clipData[mime];
-          },
-        },
-      };
-      document
-        .getElementsByTagName('editor-container')[0]
-        .clipboard['_clipboardEventDispatcher']['_onPaste'](
-          e as unknown as ClipboardEvent
-        );
+      const e = new ClipboardEvent('paste', {
+        clipboardData: new DataTransfer(),
+      });
+      Object.defineProperty(e, 'target', {
+        writable: false,
+        value: document.body,
+      });
+      Object.keys(clipData).forEach(key => {
+        e.clipboardData?.setData(key, clipData[key] as string);
+      });
+      document.body.dispatchEvent(e);
     },
     { clipData }
   );
+  await waitNextFrame(page);
 }
 
 export async function importMarkdown(
   page: Page,
-  data: string,
-  insertPositionId: string
+  focusedBlockId: string,
+  data: string
 ) {
   await page.evaluate(
-    ({ data, insertPositionId }) => {
-      document
-        .getElementsByTagName('editor-container')[0]
-        .clipboard.importMarkdown(data, insertPositionId);
+    ({ data, focusedBlockId }) => {
+      const contentParser = new window.ContentParser(window.page);
+      contentParser.importMarkdown(data, focusedBlockId);
     },
-    { data, insertPositionId }
+    { data, focusedBlockId }
   );
 }
 
@@ -408,58 +672,96 @@ export async function setSelection(
 ) {
   await page.evaluate(
     ({ anchorBlockId, anchorOffset, focusBlockId, focusOffset }) => {
-      const begin = document.querySelector(
-        `[data-block-id="${anchorBlockId}"] p`
+      /* eslint-disable @typescript-eslint/no-non-null-assertion */
+      const anchorRichText = document.querySelector<RichText>(
+        `[data-block-id="${anchorBlockId}"] rich-text`
+      )!;
+      const anchorRichTextRange = anchorRichText.vEditor.toDomRange({
+        index: anchorOffset,
+        length: 0,
+      })!;
+      const focusRichText = document.querySelector<RichText>(
+        `[data-block-id="${focusBlockId}"] rich-text`
+      )!;
+      const focusRichTextRange = focusRichText.vEditor.toDomRange({
+        index: focusOffset,
+        length: 0,
+      })!;
+
+      /* eslint-enable @typescript-eslint/no-non-null-assertion */
+      getSelection()?.setBaseAndExtent(
+        anchorRichTextRange.startContainer,
+        anchorOffset,
+        focusRichTextRange.startContainer,
+        focusOffset
       );
-      const paragraph = document.querySelector(
-        `[data-block-id="${focusBlockId}"] p`
-      );
-      begin &&
-        paragraph &&
-        getSelection()?.setBaseAndExtent(
-          begin,
-          anchorOffset,
-          paragraph,
-          focusOffset
-        );
     },
     { anchorBlockId, anchorOffset, focusBlockId, focusOffset }
   );
 }
 
-export async function readClipboardText(page: Page) {
-  await page.evaluate(() => {
-    const textarea = document.createElement('textarea');
-    textarea.setAttribute('id', 'textarea-test');
-    document.body.appendChild(textarea);
-  });
-  const textarea = page.locator('#textarea-test');
-  await textarea.focus();
+export async function readClipboardText(
+  page: Page,
+  type: 'input' | 'textarea' = 'input'
+) {
+  const id = 'clipboard-test';
+  const selector = `#${id}`;
+  await page.evaluate(
+    ({ type, id }) => {
+      const input = document.createElement(type);
+      input.setAttribute('id', id);
+      document.body.appendChild(input);
+    },
+    { type, id }
+  );
+  const input = page.locator(selector);
+  await input.focus();
   await page.keyboard.press(`${SHORT_KEY}+v`);
-  const text = await textarea.inputValue();
-  await page.evaluate(() => {
-    const textarea = document.querySelector('#textarea-test');
-    textarea?.remove();
-  });
+  const text = await input.inputValue();
+  await page.evaluate(
+    ({ selector }) => {
+      const input = document.querySelector(selector);
+      input?.remove();
+    },
+    { selector }
+  );
   return text;
 }
 
 export const getCenterPosition: (
   page: Page,
+  // TODO use `locator` directly
   selector: string
 ) => Promise<{ x: number; y: number }> = async (
   page: Page,
   selector: string
 ) => {
-  return await page.evaluate((selector: string) => {
-    const bbox = document
-      .querySelector(selector)
-      ?.getBoundingClientRect() as DOMRect;
-    return {
-      x: bbox.left + bbox.width / 2,
-      y: bbox.top + bbox.height / 2,
-    };
-  }, selector);
+  const locator = page.locator(selector);
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error("Failed to getCenterPosition! Can't get bounding box");
+  }
+  return {
+    x: box.x + box.width / 2,
+    y: box.y + box.height / 2,
+  };
+};
+
+export const getCenterPositionByLocator: (
+  page: Page,
+  locator: Locator
+) => Promise<{ x: number; y: number }> = async (
+  page: Page,
+  locator: Locator
+) => {
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error("Failed to getCenterPosition! Can't get bounding box");
+  }
+  return {
+    x: box.x + box.width / 2,
+    y: box.y + box.height / 2,
+  };
 };
 
 export const getBoundingClientRect: (
@@ -470,6 +772,12 @@ export const getBoundingClientRect: (
     return document.querySelector(selector)?.getBoundingClientRect() as DOMRect;
   }, selector);
 };
+
+export async function getBoundingBox(locator: Locator) {
+  const box = await locator.boundingBox();
+  if (!box) throw new Error('Missing column box');
+  return box;
+}
 
 export async function getBlockModel<Model extends BaseBlockModel>(
   page: Page,
@@ -487,31 +795,189 @@ export async function getBlockModel<Model extends BaseBlockModel>(
 
 export async function getIndexCoordinate(
   page: Page,
-  [richTextIndex, quillIndex]: [number, number],
+  [richTextIndex, vIndex]: [number, number],
   coordOffSet: { x: number; y: number } = { x: 0, y: 0 }
 ) {
   const coord = await page.evaluate(
-    ({ richTextIndex, quillIndex, coordOffSet }) => {
+    ({ richTextIndex, vIndex, coordOffSet }) => {
       const richText = document.querySelectorAll('rich-text')[
         richTextIndex
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ] as any;
-      const quillBound = richText.quill.getBounds(quillIndex);
-      const richTextBound = richText.getBoundingClientRect();
+      const domRange = richText.vEditor.toDomRange({
+        index: vIndex,
+        length: 0,
+      });
+      const pointBound = domRange.getBoundingClientRect();
       return {
-        x: richTextBound.left + quillBound.left + coordOffSet.x,
-        y:
-          richTextBound.top +
-          quillBound.top +
-          quillBound.height / 2 +
-          coordOffSet.y,
+        x: pointBound.left + coordOffSet.x,
+        y: pointBound.top + pointBound.height / 2 + coordOffSet.y,
       };
     },
     {
       richTextIndex,
-      quillIndex,
+      vIndex,
       coordOffSet,
     }
   );
   return coord;
+}
+
+export function virgoEditorInnerTextToString(innerText: string): string {
+  return innerText.replace('\u200B', '').trim();
+}
+
+export async function focusTitle(page: Page) {
+  // click to ensure editor is active
+  await page.mouse.move(0, 0);
+  const editor = getEditorLocator(page);
+  const locator = editor.locator('affine-default-page').first();
+  // need to set `force` to true when clicking on `affine-selected-blocks`
+  await locator.click({ force: true });
+  // avoid trigger double click
+  await page.waitForTimeout(500);
+  await page.evaluate(i => {
+    const defaultPageComponent = document.querySelectorAll(
+      'affine-default-page'
+    )[i];
+    if (!defaultPageComponent) {
+      throw new Error('default page component not found');
+    }
+    defaultPageComponent.titleVEditor.focusEnd();
+  }, currentEditorIndex);
+  await waitNextFrame(page);
+}
+
+/**
+ * XXX: this is a workaround for the bug in Playwright
+ */
+export async function shamefullyBlurActiveElement(page: Page) {
+  await page.evaluate(() => {
+    if (
+      !document.activeElement ||
+      !(document.activeElement instanceof HTMLElement)
+    ) {
+      throw new Error("document.activeElement doesn't exist");
+    }
+    document.activeElement.blur();
+  });
+}
+
+/**
+ * FIXME:
+ * Sometimes virgo state is not updated in time. Bad case like below:
+ *
+ * ```
+ * await focusRichText(page);
+ * await type(page, 'hello');
+ * await assertRichTexts(page, ['hello']);
+ * ```
+ *
+ * output(failed or flaky):
+ *
+ * ```
+ * - Expected  - 1
+ * + Received  + 1
+ *   Array [
+ * -   "hello",
+ * +   "ello",
+ *   ]
+ * ```
+ *
+ */
+export async function waitForVirgoStateUpdated(page: Page) {
+  await page.waitForTimeout(50);
+}
+
+export async function initImageState(page: Page) {
+  await initEmptyParagraphState(page);
+  await focusRichText(page);
+  await page.evaluate(() => {
+    const clipData = {
+      'text/html': `<img src='${location.origin}/test-card-1.png' />`,
+    };
+    const e = new ClipboardEvent('paste', {
+      clipboardData: new DataTransfer(),
+    });
+    Object.defineProperty(e, 'target', {
+      writable: false,
+      value: document.body,
+    });
+    Object.entries(clipData).forEach(([key, value]) => {
+      e.clipboardData?.setData(key, value);
+    });
+    document.body.dispatchEvent(e);
+  });
+
+  // due to pasting img calls fetch, so we need timeout for downloading finished.
+  await page.waitForTimeout(500);
+}
+
+export async function getCurrentEditorPageId(page: Page) {
+  return await page.evaluate(index => {
+    const editor = document.querySelectorAll('editor-container')[index];
+    if (!editor) throw new Error("Can't find editor-container");
+    const pageId = editor.page.id;
+    return pageId;
+  }, currentEditorIndex);
+}
+
+export async function getCurrentHTMLTheme(page: Page) {
+  const root = page.locator('html');
+  return await root.getAttribute('data-theme');
+}
+
+export async function getCurrentEditorTheme(page: Page) {
+  const mode = await page
+    .locator('editor-container')
+    .first()
+    .evaluate(ele => {
+      return (ele as unknown as Element & { themeObserver: ThemeObserver })
+        .themeObserver.cssVariables?.['--affine-theme-mode'];
+    });
+  return mode;
+}
+
+export async function getCurrentThemeCSSPropertyValue(
+  page: Page,
+  property: CssVariableName
+) {
+  const value = await page
+    .locator('editor-container')
+    .evaluate((ele, property: CssVariableName) => {
+      return (ele as unknown as Element & { themeObserver: ThemeObserver })
+        .themeObserver.cssVariables?.[property];
+    }, property);
+  return value;
+}
+
+export async function transformMarkdown(page: Page, data: string) {
+  const promiseResult = await page.evaluate(
+    ({ data }) => {
+      const contentParser = new window.ContentParser(window.page);
+      return contentParser.markdown2Block(data);
+    },
+    { data }
+  );
+  return promiseResult;
+}
+
+export async function transformHtml(page: Page, data: string) {
+  const promiseResult = await page.evaluate(
+    ({ data }) => {
+      const contentParser = new window.ContentParser(window.page);
+      return contentParser.htmlText2Block(data);
+    },
+    { data }
+  );
+  return promiseResult;
+}
+
+export async function export2Html(page: Page) {
+  const promiseResult = await page.evaluate(() => {
+    const contentParser = new window.ContentParser(window.page);
+    const root = window.page.root as PageBlockModel;
+    return contentParser.block2Html([contentParser.getSelectedBlock(root)]);
+  });
+  return promiseResult;
 }

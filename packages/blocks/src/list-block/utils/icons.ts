@@ -19,6 +19,7 @@ export const point2 = () => {
     </svg>
   `;
 };
+
 export const point3 = () => {
   return html`
     <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
@@ -28,6 +29,7 @@ export const point3 = () => {
     </svg>
   `;
 };
+
 export const point4 = () => {
   return html`
     <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
@@ -40,6 +42,79 @@ export const point4 = () => {
     </svg>
   `;
 };
+
+export const toggleRight = (enabled = true) => {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      data-is-toggle-icon="true"
+      width="1em"
+      height="1em"
+      viewBox="0 0 20 20"
+    >
+      <path
+        data-is-toggle-icon="true"
+        fill="currentColor"
+        opacity="${!enabled ? '0.6' : '1'}"
+        d="m15.795 11.272l-8 5A1.5 1.5 0 0 1 5.5 15V5a1.5 1.5 0 0 1 2.295-1.272l8 5a1.5 1.5 0 0 1 0 2.544Z"
+      />
+    </svg>
+  `;
+};
+export const toggleDown = () => {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      data-is-toggle-icon="true"
+      width="1em"
+      height="1em"
+      viewBox="0 0 20 20"
+      @mousedown="${(e: MouseEvent) => {
+        // console.log('preventing def svg');
+        // e.preventDefault();
+      }}"
+    >
+      <path
+        data-is-toggle-icon="true"
+        fill="currentColor"
+        d="m8.728 15.795l-5-8A1.5 1.5 0 0 1 5 5.5h10a1.5 1.5 0 0 1 1.272 2.295l-5 8a1.5 1.5 0 0 1-2.544 0Z"
+      />
+    </svg>
+  `;
+};
+
+export const chevronCircleRight = (enabled = true) => {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="1em"
+      height="1em"
+      viewBox="0 0 512 512"
+    >
+      <path
+        fill="currentColor"
+        opacity="${!enabled ? '0.6' : '1'}"
+        d="M256 8c137 0 248 111 248 248S393 504 256 504S8 393 8 256S119 8 256 8zm113.9 231L234.4 103.5c-9.4-9.4-24.6-9.4-33.9 0l-17 17c-9.4 9.4-9.4 24.6 0 33.9L285.1 256L183.5 357.6c-9.4 9.4-9.4 24.6 0 33.9l17 17c9.4 9.4 24.6 9.4 33.9 0L369.9 273c9.4-9.4 9.4-24.6 0-34z"
+      />
+    </svg>
+  `;
+};
+export const chevronCircleDown = () => {
+  return html`
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="1em"
+      height="1em"
+      viewBox="0 0 512 512"
+    >
+      <path
+        fill="currentColor"
+        d="M504 256c0 137-111 248-248 248S8 393 8 256S119 8 256 8s248 111 248 248zM273 369.9l135.5-135.5c9.4-9.4 9.4-24.6 0-33.9l-17-17c-9.4-9.4-24.6-9.4-33.9 0L256 285.1L154.4 183.5c-9.4-9.4-24.6-9.4-33.9 0l-17 17c-9.4 9.4-9.4 24.6 0 33.9L239 369.9c9.4 9.4 24.6 9.4 34 0z"
+      />
+    </svg>
+  `;
+};
+
 export const checkboxChecked = () => {
   return html`
     <svg
@@ -49,11 +124,12 @@ export const checkboxChecked = () => {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
+      <rect x="3" y="5" width="14" height="14" rx="4" fill="#1E96EB" />
       <path
         fill-rule="evenodd"
         clip-rule="evenodd"
-        d="M7 4C5.34315 4 4 5.34315 4 7V17C4 18.6569 5.34315 20 7 20H17C18.6569 20 20 18.6569 20 17V7C20 5.34315 18.6569 4 17 4H7ZM17.5665 9.56473C17.8785 9.25181 17.8776 8.74528 17.5647 8.43336C17.2518 8.12144 16.7453 8.12225 16.4334 8.43517L10.3547 14.5333L7.56666 11.7352C7.2548 11.4222 6.74827 11.4213 6.43529 11.7331C6.1223 12.045 6.12139 12.5515 6.43325 12.8645L9.64626 16.0891C10.037 16.4813 10.672 16.4814 11.0629 16.0893L17.5665 9.56473Z"
-        fill="#A6ABB7"
+        d="M13.4242 9.57576C13.6585 9.81007 13.6585 10.19 13.4242 10.4243L9.42417 14.4243C9.1977 14.6508 8.83329 14.6594 8.5963 14.444L6.5963 12.6258C6.35111 12.4029 6.33304 12.0234 6.55594 11.7782C6.77885 11.533 7.15832 11.515 7.40351 11.7379L8.98018 13.1712L12.5756 9.57576C12.81 9.34145 13.1899 9.34145 13.4242 9.57576Z"
+        fill="white"
       />
     </svg>
   `;
@@ -71,8 +147,8 @@ export const checkboxUnchecked = () => {
       <path
         fill-rule="evenodd"
         clip-rule="evenodd"
-        d="M17 5.6H7C6.2268 5.6 5.6 6.2268 5.6 7V17C5.6 17.7732 6.2268 18.4 7 18.4H17C17.7732 18.4 18.4 17.7732 18.4 17V7C18.4 6.2268 17.7732 5.6 17 5.6ZM7 4C5.34315 4 4 5.34315 4 7V17C4 18.6569 5.34315 20 7 20H17C18.6569 20 20 18.6569 20 17V7C20 5.34315 18.6569 4 17 4H7Z"
-        fill="#A6ABB7"
+        d="M13 6.2H7C5.4536 6.2 4.2 7.4536 4.2 9V15C4.2 16.5464 5.4536 17.8 7 17.8H13C14.5464 17.8 15.8 16.5464 15.8 15V9C15.8 7.4536 14.5464 6.2 13 6.2ZM7 5C4.79086 5 3 6.79086 3 9V15C3 17.2091 4.79086 19 7 19H13C15.2091 19 17 17.2091 17 15V9C17 6.79086 15.2091 5 13 5H7Z"
+        fill="#77757D"
       />
     </svg>
   `;

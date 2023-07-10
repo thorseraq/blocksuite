@@ -21,8 +21,10 @@ export const SHORT_KEY = IS_MAC ? 'Meta' : 'Control';
  */
 export const MODIFIER_KEY = IS_MAC ? 'Alt' : 'Shift';
 
-export async function type(page: Page, content: string) {
-  await page.keyboard.type(content, { delay: 50 });
+export const SHIFT_KEY = 'Shift';
+
+export async function type(page: Page, content: string, delay = 50) {
+  await page.keyboard.type(content, { delay });
 }
 
 export async function withPressKey(
@@ -43,9 +45,36 @@ export async function pressSpace(page: Page) {
   await page.keyboard.press('Space', { delay: 50 });
 }
 
+export async function pressArrowLeft(page: Page, count = 1) {
+  for (let i = 0; i < count; i++) {
+    await page.keyboard.press('ArrowLeft', { delay: 50 });
+  }
+}
+export async function pressArrowRight(page: Page, count = 1) {
+  for (let i = 0; i < count; i++) {
+    await page.keyboard.press('ArrowRight', { delay: 50 });
+  }
+}
+
+export async function pressArrowDown(page: Page, count = 1) {
+  for (let i = 0; i < count; i++) {
+    await page.keyboard.press('ArrowDown', { delay: 50 });
+  }
+}
+
+export async function pressArrowUp(page: Page, count = 1) {
+  for (let i = 0; i < count; i++) {
+    await page.keyboard.press('ArrowUp', { delay: 50 });
+  }
+}
+
 export async function pressEnter(page: Page) {
   // avoid flaky test by simulate real user input
   await page.keyboard.press('Enter', { delay: 50 });
+}
+
+export async function pressEscape(page: Page) {
+  await page.keyboard.press('Escape');
 }
 
 export async function undoByKeyboard(page: Page) {
@@ -88,13 +117,23 @@ export async function copyByKeyboard(page: Page) {
   await page.keyboard.press(`${SHORT_KEY}+c`, { delay: 50 });
 }
 
-export async function pasteByKeyboard(page: Page) {
-  const doesEditorActive = await page.evaluate(() =>
-    document.activeElement?.closest('editor-container')
-  );
-  if (!doesEditorActive) {
-    await page.click('editor-container');
+export async function cutByKeyboard(page: Page) {
+  await page.keyboard.press(`${SHORT_KEY}+x`, { delay: 50 });
+}
+
+/**
+ * Notice: this method will try to click closest editor by default
+ */
+export async function pasteByKeyboard(page: Page, forceFocus = true) {
+  if (forceFocus) {
+    const isEditorActive = await page.evaluate(() =>
+      document.activeElement?.closest('editor-container')
+    );
+    if (!isEditorActive) {
+      await page.click('editor-container');
+    }
   }
+
   await page.keyboard.press(`${SHORT_KEY}+v`, { delay: 50 });
 }
 
@@ -132,11 +171,19 @@ export async function fillLine(page: Page, toNext = false) {
     let nextHeight;
     // type until current block height is changed, means has new line
     do {
-      await page.keyboard.type('a');
+      await page.keyboard.type('a', { delay: 50 });
       [, nextHeight] = await getCursorBlockIdAndHeight(page);
     } while (nextHeight === height);
     if (!toNext) {
       page.keyboard.press('Backspace');
     }
+  }
+}
+
+export async function pressForwardDelete(page: Page) {
+  if (IS_MAC) {
+    await page.keyboard.press('Control+d', { delay: 50 });
+  } else {
+    await page.keyboard.press('Delete', { delay: 50 });
   }
 }

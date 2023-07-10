@@ -1,13 +1,20 @@
-import { defineBlockSchema, SchemaToModel } from '@blocksuite/store';
-import { literal } from 'lit/static-html.js';
+import { defineBlockSchema, type SchemaToModel } from '@blocksuite/store';
 
-export const SurfaceBlockModelSchema = defineBlockSchema(
-  'affine:surface',
-  () => ({}),
-  {
-    version: 1,
-    tag: literal`affine-surface`,
-  }
-);
+type SurfaceBlockProps = {
+  elements: Record<string, unknown>;
+};
 
-export type SurfaceBlockModel = SchemaToModel<typeof SurfaceBlockModelSchema>;
+export const SurfaceBlockSchema = defineBlockSchema({
+  flavour: 'affine:surface',
+  props: (): SurfaceBlockProps => ({
+    elements: {},
+  }),
+  metadata: {
+    version: 3,
+    role: 'hub',
+    parent: ['affine:page'],
+    children: [],
+  },
+});
+
+export type SurfaceBlockModel = SchemaToModel<typeof SurfaceBlockSchema>;

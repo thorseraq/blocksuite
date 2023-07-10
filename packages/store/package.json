@@ -1,11 +1,11 @@
 {
   "name": "@blocksuite/store",
-  "version": "0.4.0-alpha.4",
+  "version": "0.6.0",
   "description": "BlockSuite data store built for general purpose state management.",
   "main": "src/index.ts",
   "type": "module",
+  "repository": "toeverything/blocksuite",
   "scripts": {
-    "serve": "PORT=4444 node node_modules/y-webrtc/bin/server.js",
     "build": "tsc",
     "test:unit": "vitest --run",
     "test:unit:coverage": "vitest run --coverage",
@@ -23,24 +23,27 @@
     "buffer": "^6.0.3",
     "flexsearch": "0.7.21",
     "idb-keyval": "^6.2.0",
-    "ky": "^0.33.2",
-    "lib0": "^0.2.62",
+    "ky": "^0.33.3",
+    "lib0": "^0.2.74",
     "merge": "^2.1.1",
+    "minimatch": "^9.0.0",
     "nanoid": "^4.0.1",
     "y-protocols": "^1.0.5",
-    "y-webrtc": "^10.2.4",
-    "zod": "^3.20.6"
+    "zod": "^3.21.4"
   },
   "devDependencies": {
-    "lit": "^2.6.1",
-    "yjs": "^13.5.46"
+    "async-call-rpc": "^6.3.1",
+    "lit": "^2.7.3",
+    "yjs": "^13.6.5"
   },
   "peerDependencies": {
+    "async-call-rpc": "^6",
     "yjs": "^13"
   },
   "exports": {
     "./src/*": "./src/*.ts",
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./providers/*": "./src/providers/*.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -49,8 +52,15 @@
     "exports": {
       "./src/*": "./dist/*.js",
       ".": {
+        "types": "./dist/index.d.ts",
         "module": "./dist/index.js",
         "import": "./dist/index.js"
+      },
+      "./shim.d.ts": "./shim.d.ts",
+      "./providers/*": {
+        "types": "./dist/providers/*.d.ts",
+        "module": "./dist/providers/*.js",
+        "import": "./dist/providers/*.js"
       }
     }
   }

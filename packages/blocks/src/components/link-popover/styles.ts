@@ -1,6 +1,6 @@
 import { css } from 'lit';
 
-import { toolTipStyle } from '../tooltip/tooltip.js';
+import { tooltipStyle } from '../tooltip/tooltip.js';
 
 export const editLinkStyle = css`
   .affine-link-edit-popover {
@@ -8,9 +8,9 @@ export const editLinkStyle = css`
     width: 404px;
     height: 112px;
     padding: 12px;
-    box-shadow: var(--affine-popover-shadow);
-    background: var(--affine-popover-background);
-    border-radius: 10px;
+    box-shadow: var(--affine-shadow-2);
+    background: var(--affine-background-overlay-panel-color);
+    border-radius: 8px;
     display: grid;
     grid-template-columns: auto auto auto;
     grid-template-rows: repeat(2, 1fr);
@@ -20,6 +20,8 @@ export const editLinkStyle = css`
       'link-area btn';
     justify-items: center;
     align-items: center;
+    /* breaks 'basic link' test in chromium */
+    /* user-select: none; */
   }
 
   .affine-edit-text-area {
@@ -32,6 +34,7 @@ export const editLinkStyle = css`
     grid-template-areas: 'text span text-input';
     justify-items: center;
     align-items: center;
+    user-select: none;
   }
 
   .affine-edit-link-area {
@@ -67,6 +70,7 @@ export const editLinkStyle = css`
 
   .affine-confirm-button {
     grid-area: btn;
+    user-select: none;
     fill: var(--affine-primary-color);
   }
   .affine-confirm-button[disabled],
@@ -157,12 +161,12 @@ export const linkPopoverStyle = css`
   .affine-link-popover {
     display: flex;
     align-items: center;
-    height: 34px;
+    height: 40px;
     padding: 0 12px;
 
-    background: var(--affine-popover-background);
-    box-shadow: var(--affine-popover-shadow);
-    border-radius: 0 10px 10px 10px;
+    background: var(--affine-background-overlay-panel-color);
+    box-shadow: var(--affine-shadow-2);
+    border-radius: 8px;
   }
 
   .affine-link-popover-input {
@@ -183,7 +187,6 @@ export const linkPopoverStyle = css`
     user-select: none;
     cursor: pointer;
     white-space: nowrap;
-    overflow: hidden;
   }
 
   .affine-link-popover-dividing-line {
@@ -194,5 +197,5 @@ export const linkPopoverStyle = css`
   }
 
   ${editLinkStyle}
-  ${toolTipStyle}
+  ${tooltipStyle}
 `;

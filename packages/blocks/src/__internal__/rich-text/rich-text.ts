@@ -1,227 +1,289 @@
-import type { BaseBlockModel } from '@blocksuite/store';
+import { ShadowlessElement } from '@blocksuite/lit';
+import { assertExists, type BaseBlockModel } from '@blocksuite/store';
+import type { BaseTextAttributes, VHandlerContext } from '@blocksuite/virgo';
+import { VEditor } from '@blocksuite/virgo';
 import { css, html } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
-import type { LeafBlot } from 'parchment';
-import type { DeltaStatic, Quill as QuillType } from 'quill';
-import Quill from 'quill';
-import QuillCursors from 'quill-cursors';
 
-import Syntax from '../../code-block/components/syntax-code-block.js';
-import type { BlockHost } from '../utils/index.js';
-import { NonShadowLitElement } from '../utils/lit.js';
-import { createKeyboardBindings } from './keyboard.js';
-import { KeyboardWithEvent } from './quill-keyboard.js';
+import { activeEditorManager } from '../utils/active-editor-manager.js';
+import { setupVirgoScroll } from '../utils/virgo.js';
+import { createKeyboardBindings, createKeyDownHandler } from './keyboard.js';
+import { REFERENCE_NODE } from './reference-node.js';
+import { type AffineTextSchema, type AffineVEditor } from './virgo/types.js';
 
-Quill.register('modules/keyboard', KeyboardWithEvent, true);
-Quill.register('modules/cursors', QuillCursors, true);
-const Clipboard = Quill.import('modules/clipboard');
-
-class EmptyClipboard extends Clipboard {
-  onPaste() {
-    // No need to execute
+const IGNORED_ATTRIBUTES = ['code', 'reference'] as const;
+const isValidUrl = (url: string) => {
+  try {
+    new URL(url);
+    return true;
+  } catch (e) {
+    return false;
   }
-}
+};
 
-Quill.register('modules/clipboard', EmptyClipboard, true);
+const autoIdentifyLink = (
+  editor: AffineVEditor,
+  context: VHandlerContext<BaseTextAttributes, InputEvent | CompositionEvent>
+) => {
+  const vRange = editor.getVRange();
+  if (!vRange) return;
+  if (context.attributes?.link && context.data === ' ') {
+    delete context.attributes['link'];
+    return;
+  }
 
-const Strike = Quill.import('formats/strike');
-// Quill uses <s> by default，but <s> is not supported by HTML5
-Strike.tagName = 'del';
-Quill.register(Strike, true);
+  if (context.attributes?.link) {
+    const linkDeltaInfo = editor.deltaService
+      .getDeltasByVRange(vRange)
+      .filter(([delta]) => delta.attributes?.link)[0];
+    const [delta, { index, length }] = linkDeltaInfo;
+    const rangePositionInDelta = vRange.index - index;
 
-const CodeToken = Quill.import('modules/syntax');
-CodeToken.register();
-Syntax.register();
-Quill.register('modules/syntax', Syntax, true);
+    //It means the link has been custom edited
+    if (delta.attributes?.link !== delta.insert) {
+      // If the cursor is at the end of the link, we should not auto identify it
+      if (rangePositionInDelta === length) {
+        delete context.attributes['link'];
+        return;
+      }
+      // If the cursor is not at the end of the link, we should only update the link text
+      return;
+    }
+    const newText =
+      delta.insert.slice(0, rangePositionInDelta) +
+      context.data +
+      delta.insert.slice(rangePositionInDelta);
+    const isUrl = isValidUrl(newText);
+
+    // If the new text with original link text is not pattern matched, we should reset the text
+    if (!isUrl) {
+      editor.resetText({ index, length });
+      delete context.attributes['link'];
+      return;
+    }
+    // If the new text with original link text is pattern matched, we should update the link text
+    editor.formatText(
+      {
+        index,
+        length,
+      },
+      {
+        link: newText,
+      }
+    );
+    context.attributes = {
+      ...context.attributes,
+      link: newText,
+    };
+    return;
+  }
+
+  const [line] = editor.getLine(vRange.index);
+
+  // In delete, context.data is null
+  const insertText = context.data || '';
+  const verifyData = `${line.textContent.slice(
+    0,
+    vRange.index
+  )}${insertText}`.split(' ');
+
+  const verifyStr = verifyData[verifyData.length - 1];
+
+  const isUrl = isValidUrl(verifyStr);
+
+  if (!isUrl) {
+    return;
+  }
+  const startIndex = vRange.index + insertText.length - verifyStr.length;
+
+  editor.formatText(
+    {
+      index: startIndex,
+      length: verifyStr.length,
+    },
+    {
+      link: verifyStr,
+    }
+  );
+
+  context.attributes = {
+    ...context.attributes,
+    link: verifyStr,
+  };
+};
+
+const autoIdentifyReference = (editor: AffineVEditor, text: string) => {
+  // @AffineReference:(id)
+  const referencePattern = /@AffineReference:\((.*)\)/g;
+
+  const match = referencePattern.exec(text);
+  if (!match) {
+    return;
+  }
+
+  const pageId = match[1];
+
+  editor.deleteText({
+    index: 0,
+    length: match[0].length,
+  });
+  editor.setVRange({
+    index: 0,
+    length: 0,
+  });
+
+  const vRange = {
+    index: match[0].length,
+    length: 0,
+  };
+
+  editor.insertText(vRange, REFERENCE_NODE, {
+    reference: { type: 'Subpage', pageId },
+  });
+};
 
 @customElement('rich-text')
-export class RichText extends NonShadowLitElement {
-  static styles = css`
-    /*
- * This style is most simple to reset the default styles of the quill editor
- * User should custom the styles of the block in the block itself
- */
-    .ql-cursor-flag {
-      display: none;
-    }
-    .ql-container {
-      box-sizing: border-box;
+export class RichText extends ShadowlessElement {
+  static override styles = css`
+    .affine-rich-text {
       height: 100%;
-      margin: 0;
-      position: relative;
-    }
-    .ql-container.ql-disabled .ql-tooltip {
-      visibility: hidden;
-    }
-    .ql-clipboard {
-      left: -100000px;
-      height: 1px;
-      overflow-y: hidden;
-      position: absolute;
-      top: 50%;
-    }
-    .ql-container p {
-      margin: 0;
-      padding: 0;
-    }
-    .ql-editor {
-      box-sizing: border-box;
-      height: 100%;
+      width: 100%;
       outline: none;
-      tab-size: 4;
-      -moz-tab-size: 4;
-      text-align: left;
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      margin: 3px 0;
-    }
-    .ql-editor > * {
       cursor: text;
     }
-    .ql-editor.ql-blank::before {
-      color: var(--affine-disable-color);
-      content: attr(data-placeholder);
-      pointer-events: none;
-      position: absolute;
+
+    v-line {
+      scroll-margin-top: 50px;
+      scroll-margin-bottom: 30px;
     }
   `;
 
-  @query('.affine-rich-text.quill-container')
-  private _textContainer!: HTMLDivElement;
+  @query('.affine-rich-text')
+  private _virgoContainer!: HTMLDivElement;
+  get virgoContainer() {
+    return this._virgoContainer;
+  }
 
-  quill!: QuillType;
-
-  @property({ hasChanged: () => true })
-  host!: BlockHost;
-
-  @property()
+  @property({ attribute: false })
   model!: BaseBlockModel;
 
-  @property()
-  placeholder?: string;
+  @property({ attribute: false })
+  textSchema?: AffineTextSchema;
 
-  @property({ hasChanged: () => true })
-  modules: Record<string, unknown> = {};
+  private _vEditor: AffineVEditor | null = null;
+  get vEditor() {
+    return this._vEditor;
+  }
 
-  firstUpdated() {
-    const { host, model, placeholder, _textContainer } = this;
-    const { page } = host;
-    const keyboardBindings = createKeyboardBindings(page, model);
-
-    this.quill = new Quill(_textContainer, {
-      modules: Object.assign(
-        {
-          cursors: true,
-          toolbar: false,
-          history: {
-            maxStack: 0,
-            userOnly: true,
-          },
-          keyboard: {
-            bindings: keyboardBindings,
-          },
-        },
-        this.modules
-      ),
-      placeholder,
+  override firstUpdated() {
+    assertExists(this.model.text, 'rich-text need text to init.');
+    this._vEditor = new VEditor(this.model.text.yText, {
+      active: () => activeEditorManager.isActive(this),
     });
+    setupVirgoScroll(this, this._vEditor);
+    const textSchema = this.textSchema;
+    assertExists(
+      textSchema,
+      'Failed to render rich-text! textSchema not found'
+    );
+    this._vEditor.setAttributeSchema(textSchema.attributesSchema);
+    this._vEditor.setAttributeRenderer(textSchema.textRenderer());
+    autoIdentifyReference(this._vEditor, this.model.text.yText.toString());
 
-    page.attachRichText(model.id, this.quill);
-    page.awarenessStore.updateLocalCursor(page);
-    this.model.propsUpdated.on(() => this.requestUpdate());
+    const keyboardBindings = createKeyboardBindings(this.model, this._vEditor);
+    const keyDownHandler = createKeyDownHandler(
+      this._vEditor,
+      keyboardBindings,
+      this.model
+    );
 
-    if (this.modules.syntax && this.quill.getText() === '\n') {
-      this.quill.focus();
-    }
-    // If you type a character after the code or link node,
-    // the character should not be inserted into the code or link node.
-    // So we check and remove the corresponding format manually.
-    this.quill.on('text-change', (delta: DeltaStatic) => {
-      const selectorMap = {
-        code: 'code',
-        link: 'link-node',
-      } as const;
-      let attr: keyof typeof selectorMap | null = null;
+    let ifPrefixSpace = false;
 
-      if (!delta.ops) {
-        return;
-      }
+    this._vEditor.mount(this._virgoContainer);
+    this._vEditor.bindHandlers({
+      keydown: keyDownHandler,
+      virgoInput: ctx => {
+        const vEditor = this._vEditor;
+        assertExists(vEditor);
+        const vRange = vEditor.getVRange();
+        if (!vRange || vRange.length !== 0) {
+          return ctx;
+        }
 
-      if (delta.ops[1]?.attributes?.code) {
-        attr = 'code';
-      }
-      if (delta.ops[1]?.attributes?.link) {
-        attr = 'link';
-      }
-      // only length is 2 need to be handled
-      if (delta.ops.length === 2 && delta.ops[1]?.insert && attr) {
-        const retain = delta.ops[0].retain;
-        const selector = selectorMap[attr];
-        if (retain !== undefined) {
-          const currentLeaf: [LeafBlot, number] = this.quill.getLeaf(
-            retain + Number(delta.ops[1]?.insert.toString().length)
-          );
-          const nextLeaf: [LeafBlot, number] = this.quill.getLeaf(
-            retain + Number(delta.ops[1]?.insert.toString().length) + 1
-          );
-          const currentParentElement = currentLeaf[0]?.domNode?.parentElement;
-          const currentEmbedElement = currentParentElement?.closest(selector);
-          const nextParentElement = nextLeaf[0]?.domNode?.parentElement;
-          const nextEmbedElement = nextParentElement?.closest(selector);
-          const insertedString: string = delta.ops[1]?.insert.toString();
+        const { data, event } = ctx;
+        const deltas = vEditor.getDeltasByVRange(vRange);
 
-          // if insert to the same node, no need to handle
-          // For example,
-          // `inline |code`
-          //         ⬆️ should not remove format when insert to inside the format
+        // Overwrite the default behavior (Insert period when consecutive spaces) of IME.
+        if (event.inputType === 'insertText' && data === ' ') {
+          ifPrefixSpace = true;
+        } else if (data !== '. ' && data !== '。 ') {
+          ifPrefixSpace = false;
+        }
+        if (ifPrefixSpace && (data === '. ' || data === '。 ')) {
+          ctx.data = ' ';
+        }
+
+        if (data && data.length > 0 && data !== '\n') {
           if (
-            // At the end of the node, need to remove format
-            !nextEmbedElement ||
-            // At the edge of the node, need to remove format
-            nextEmbedElement !== currentEmbedElement
+            deltas.length > 1 ||
+            (deltas.length === 1 && vRange.index !== 0)
           ) {
-            model.text?.replace(
-              retain,
-              insertedString.length,
-              ' ' + insertedString,
-              {
-                [attr]: false,
-              }
-            );
+            const { attributes } = deltas[0][0];
+            if (deltas.length !== 1 || vRange.index === vEditor.yText.length) {
+              IGNORED_ATTRIBUTES.forEach(attr => {
+                delete attributes?.[attr];
+              });
+            }
+
+            ctx.attributes = attributes ?? null;
           }
         }
-      }
+        autoIdentifyLink(vEditor, ctx);
+
+        return ctx;
+      },
+      virgoCompositionEnd: ctx => {
+        const vEditor = this._vEditor;
+        assertExists(vEditor);
+        const vRange = vEditor.getVRange();
+        if (!vRange || vRange.length !== 0) {
+          return ctx;
+        }
+
+        const { data } = ctx;
+        const deltas = vEditor.getDeltasByVRange(vRange);
+        if (data && data.length > 0 && data !== '\n') {
+          if (
+            deltas.length > 1 ||
+            (deltas.length === 1 && vRange.index !== 0)
+          ) {
+            const attributes = deltas[0][0].attributes;
+            if (deltas.length !== 1 || vRange.index === vEditor.yText.length) {
+              IGNORED_ATTRIBUTES.forEach(attr => {
+                delete attributes?.[attr];
+              });
+            }
+
+            ctx.attributes = attributes ?? null;
+          }
+        }
+        autoIdentifyLink(vEditor, ctx);
+
+        return ctx;
+      },
     });
+
+    this._vEditor.setReadonly(this.model.page.readonly);
   }
 
-  override connectedCallback() {
-    super.connectedCallback();
-    const { model, host } = this;
-    if (this.quill) {
-      host.page.attachRichText(model.id, this.quill);
+  override updated() {
+    if (this._vEditor) {
+      this._vEditor.setReadonly(this.model.page.readonly);
     }
   }
 
-  override disconnectedCallback() {
-    super.disconnectedCallback();
-
-    this.host.page.detachRichText(this.model.id);
-  }
-
-  updated() {
-    if (this.modules.syntax) {
-      //@ts-ignore
-      this.quill.theme.modules.syntax.setLang(this.modules.syntax.language);
-    }
-    // Update placeholder if block`s type changed
-    this.quill?.root.setAttribute('data-placeholder', this.placeholder ?? '');
-    this.quill?.root.setAttribute('contenteditable', `${!this.host.readonly}`);
-  }
-
-  render() {
-    return html`<div class="affine-rich-text quill-container ql-container">
-      <slot></slot>
-    </div>`;
+  override render() {
+    return html`<div class="affine-rich-text virgo-editor"></div>`;
   }
 }
 

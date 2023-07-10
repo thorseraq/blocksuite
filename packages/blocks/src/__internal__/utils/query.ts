@@ -1,27 +1,47 @@
-import { BLOCK_ID_ATTR as ATTR } from '@blocksuite/global/config';
+import {
+  BLOCK_CHILDREN_CONTAINER_PADDING_LEFT as PADDING_LEFT,
+  BLOCK_ID_ATTR as ATTR,
+} from '@blocksuite/global/config';
 import { assertExists, matchFlavours } from '@blocksuite/global/utils';
-import type { BaseBlockModel } from '@blocksuite/store';
-import type { LeafBlot } from 'parchment';
+import type { BlockElement } from '@blocksuite/lit';
+import type { BaseBlockModel, Page } from '@blocksuite/store';
 
-import type { DefaultPageBlockComponent, SelectedBlock } from '../../index.js';
+import { activeEditorManager } from '../../__internal__/utils/active-editor-manager.js';
+import { type AbstractEditor } from '../../__internal__/utils/types.js';
+import type { Loader } from '../../components/loader.js';
+import type { DefaultPageBlockComponent } from '../../page-block/default/default-page-block.js';
+import type { EdgelessPageBlockComponent } from '../../page-block/edgeless/edgeless-page-block.js';
 import type { RichText } from '../rich-text/rich-text.js';
-import type { IPoint } from './gesture.js';
+import { clamp } from './common.js';
+import { type Point, Rect } from './rect.js';
+import { getCurrentNativeRange } from './selection.js';
+
+const ATTR_SELECTOR = `[${ATTR}]`;
+
+// margin-top: calc(var(--affine-paragraph-space) + 24px);
+// h1.margin-top = 8px + 24px = 32px;
+const MAX_SPACE = 32;
+const STEPS = MAX_SPACE / 2 / 2;
 
 type ElementTagName = keyof HTMLElementTagNameMap;
 
+// Fix use unknown type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type BlockComponentElement = BlockElement<any>;
+
+export type BlockCustomElement =
+  HTMLElementTagNameMap[keyof HTMLElementTagNameMap] extends infer U
+    ? U extends {
+        model: infer M;
+      }
+      ? M extends BaseBlockModel
+        ? U
+        : never
+      : never
+    : never;
+
 interface ContainerBlock {
   model?: BaseBlockModel;
-}
-
-export function getBlockById<T extends ElementTagName>(
-  id: string,
-  container: Element = document.body
-) {
-  return container.querySelector<T>(`[${ATTR}="${id}"]` as T);
-}
-
-export function getBlockByPoint(point: IPoint): Element | null | undefined {
-  return document.elementFromPoint(point.x, point.y)?.closest(`[${ATTR}]`);
 }
 
 /**
@@ -31,8 +51,12 @@ export function getParentBlockById<T extends ElementTagName>(
   id: string,
   ele: Element = document.body
 ) {
-  const currentBlock = getBlockById<T>(id, ele);
-  return currentBlock?.parentElement?.closest<T>(`[${ATTR}]` as T) || null;
+  const currentBlock = getBlockElementById(id, ele);
+  return (
+    (currentBlock?.parentElement?.closest<T>(
+      ATTR_SELECTOR as T
+    ) as BlockComponentElement) || null
+  );
 }
 
 /**
@@ -40,15 +64,15 @@ export function getParentBlockById<T extends ElementTagName>(
  * @example
  * ```md
  * page
- * - frame
+ * - note
  *  - paragraph <- when invoked here, the traverse order will be following
  *    - child <- 1
  *  - sibling <- 2
- * - frame <- 3 (will be skipped)
+ * - note <- 3 (will be skipped)
  *   - paragraph <- 4
  * ```
  *
- * NOTE: this method will skip the `affine:frame` block
+ * NOTE: this method will skip the `affine:note` block
  */
 export function getNextBlock(
   model: BaseBlockModel,
@@ -68,7 +92,7 @@ export function getNextBlock(
     const nextSibling = page.getNextSibling(currentBlock);
     if (nextSibling) {
       // Assert nextSibling is not possible to be `affine:page`
-      if (matchFlavours(nextSibling, ['affine:frame'])) {
+      if (matchFlavours(nextSibling, ['affine:note'])) {
         return getNextBlock(nextSibling);
       }
       return nextSibling;
@@ -83,16 +107,16 @@ export function getNextBlock(
  * @example
  * ```md
  * page
- * - frame
+ * - note
  *   - paragraph <- 5
- * - frame <- 4 (will be skipped)
+ * - note <- 4 (will be skipped)
  *  - paragraph <- 3
  *    - child <- 2
  *      - child <- 1
  *  - paragraph <- when invoked here, the traverse order will be above
  * ```
  *
- * NOTE: this method will skip the `affine:frame` and `affine:page` block
+ * NOTE: this method will skip the `affine:note` and `affine:page` block
  */
 export function getPreviousBlock(
   model: BaseBlockModel,
@@ -112,7 +136,13 @@ export function getPreviousBlock(
   }
   const previousBlock = page.getPreviousSibling(model);
   if (!previousBlock) {
-    if (matchFlavours(parentBlock, ['affine:frame', 'affine:page'])) {
+    if (
+      matchFlavours(parentBlock, [
+        'affine:note',
+        'affine:page',
+        'affine:database',
+      ])
+    ) {
       return getPreviousBlock(parentBlock);
     }
     return parentBlock;
@@ -122,111 +152,313 @@ export function getPreviousBlock(
     while (lastChild.children.length) {
       lastChild = lastChild.children[lastChild.children.length - 1];
     }
-    // Assume children is not possible to be `affine:frame` or `affine:page`
+    // Assume children is not possible to be `affine:note` or `affine:page`
     return lastChild;
   }
+
+  if (matchFlavours(previousBlock, ['affine:surface'])) {
+    return getPreviousBlock(previousBlock);
+  }
+
   return previousBlock;
 }
 
 /**
- * Note: this method will return `DefaultPageBlockComponent` | `EdgelessPageBlockComponent`!
- *
- * @deprecated This method only works in the paper mode!
+ * Returns `DefaultPageBlockComponent` | `EdgelessPageBlockComponent` if it exists
+ * otherwise return `null`.
  */
-export function getDefaultPageBlock(model: BaseBlockModel) {
+export function getPageBlock(
+  model: BaseBlockModel
+): DefaultPageBlockComponent | EdgelessPageBlockComponent | null {
   assertExists(model.page.root);
-  const page = document.querySelector(
-    `[${ATTR}="${model.page.root.id}"]`
-  ) as DefaultPageBlockComponent;
-  // | EdgelessPageBlockComponent | null;
-  return page;
+  return document.querySelector(`[${ATTR}="${model.page.root.id}"]`);
 }
 
-export function getContainerByModel(model: BaseBlockModel) {
-  const page = getDefaultPageBlock(model);
-  const container = page.closest('editor-container');
-  assertExists(container);
-  return container;
+/**
+ * If it's not in the page mode, it will return `null` directly.
+ */
+export function getDefaultPage(page: Page) {
+  const editor = getEditorContainer(page);
+  if (editor.mode !== 'page') return null;
+  const pageComponent = editor.querySelector('affine-default-page');
+  return pageComponent;
 }
 
-export function getBlockElementByModel(model: BaseBlockModel) {
+/**
+ * If it's not in the edgeless mode, it will return `null` directly.
+ */
+export function getEdgelessPage(page: Page) {
+  const editor = getEditorContainer(page);
+  if (editor.mode !== 'edgeless') return null;
+  const pageComponent = editor.querySelector('affine-edgeless-page');
+  return pageComponent;
+}
+
+/**
+ * This function exposes higher levels of abstraction.
+ *
+ * PLEASE USE IT WITH CAUTION!
+ */
+export function getEditorContainer(page: Page): AbstractEditor {
+  assertExists(
+    page.root,
+    'Failed to check page mode! Page root is not exists!'
+  );
+  const pageBlock = getBlockElementById(page.root.id);
+  // EditorContainer
+  const editorContainer = pageBlock?.closest('editor-container');
+  assertExists(editorContainer);
+  return editorContainer as AbstractEditor;
+}
+
+export function getEditorContainerByElement(ele: Element) {
+  // EditorContainer
+  const editorContainer = ele.closest('editor-container');
+  assertExists(editorContainer);
+  return editorContainer;
+}
+
+export function isPageMode(page: Page) {
+  const editor = getEditorContainer(page);
+  if (!('mode' in editor)) {
+    throw new Error('Failed to check page mode! Editor mode is not exists!');
+  }
+  return editor.mode === 'page';
+}
+
+export function checkIsPageModeByDom(ele: Element) {
+  const editor = ele?.closest('editor-container');
+  if (!editor || !('mode' in editor)) {
+    throw new Error('Failed to check page mode! Editor mode is not exists!');
+  }
+  return editor.mode === 'page';
+}
+
+/**
+ * Get editor viewport element.
+ *
+ * @example
+ * ```ts
+ * const viewportElement = getViewportElement(this.model.page);
+ * if (!viewportElement) return;
+ * this._disposables.addFromEvent(viewportElement, 'scroll', () => {
+ *   updatePosition();
+ * });
+ * ```
+ */
+export function getViewportElement(page: Page) {
+  const isPage = isPageMode(page);
+  if (!isPage) return null;
+  assertExists(page.root);
+  const defaultPageBlock = document.querySelector(
+    `[${ATTR}="${page.root.id}"]`
+  );
+
+  if (
+    !defaultPageBlock ||
+    defaultPageBlock.closest('affine-default-page') !== defaultPageBlock
+  ) {
+    throw new Error('Failed to get viewport element!');
+  }
+  return (defaultPageBlock as DefaultPageBlockComponent).viewportElement;
+}
+
+export function getBlockElementByModel(
+  model: BaseBlockModel
+): BlockComponentElement | null {
   assertExists(model.page.root);
-  const page = document.querySelector(
-    `[${ATTR}="${model.page.root.id}"]`
-  ) as DefaultPageBlockComponent;
+  const editor = activeEditorManager.getActiveEditor();
+  const page = (editor ?? document).querySelector<
+    DefaultPageBlockComponent | EdgelessPageBlockComponent
+  >(`[${ATTR}="${model.page.root.id}"]`);
   if (!page) return null;
 
   if (model.id === model.page.root.id) {
-    return page as HTMLElement;
+    return page;
   }
 
-  const element = page.querySelector(`[${ATTR}="${model.id}"]`);
-  return element as HTMLElement | null;
+  return page.querySelector<BlockComponentElement>(`[${ATTR}="${model.id}"]`);
 }
 
-export function getStartModelBySelection() {
-  const range = getCurrentRange();
+export function asyncGetBlockElementByModel(
+  model: BaseBlockModel
+): Promise<BlockComponentElement | null> {
+  assertExists(model.page.root);
+  const editor = activeEditorManager.getActiveEditor();
+  const page = (editor ?? document).querySelector<
+    DefaultPageBlockComponent | EdgelessPageBlockComponent
+  >(`[${ATTR}="${model.page.root.id}"]`);
+  if (!page) return Promise.resolve(null);
+
+  if (model.id === model.page.root.id) {
+    return Promise.resolve(page);
+  }
+
+  let resolved = false;
+  return new Promise<BlockComponentElement>((resolve, reject) => {
+    const onSuccess = (element: BlockComponentElement) => {
+      resolved = true;
+      observer.disconnect();
+      resolve(element);
+    };
+
+    const onFail = () => {
+      observer.disconnect();
+      reject(
+        new Error(
+          `Cannot find block element by model: ${model.flavour} id: ${model.id}`
+        )
+      );
+    };
+
+    const observer = new MutationObserver(() => {
+      const blockElement = page.querySelector<BlockComponentElement>(
+        `[${ATTR}="${model.id}"]`
+      );
+      if (blockElement) {
+        onSuccess(blockElement);
+      }
+    });
+
+    observer.observe(page, {
+      childList: true,
+      subtree: true,
+    });
+
+    requestAnimationFrame(() => {
+      if (!resolved) {
+        const blockElement = getBlockElementByModel(model);
+        if (blockElement) {
+          onSuccess(blockElement);
+        } else {
+          onFail();
+        }
+      }
+    });
+  });
+}
+
+export function getStartModelBySelection(range = getCurrentNativeRange()) {
   const startContainer =
     range.startContainer instanceof Text
       ? (range.startContainer.parentElement as HTMLElement)
       : (range.startContainer as HTMLElement);
 
-  const startComponent = startContainer.closest(`[${ATTR}]`) as ContainerBlock;
+  const startComponent = startContainer.closest(
+    `[${ATTR}]`
+  ) as ContainerBlock | null;
+  if (!startComponent) {
+    return null;
+  }
   const startModel = startComponent.model as BaseBlockModel;
+  if (matchFlavours(startModel, ['affine:note', 'affine:page'])) {
+    return null;
+  }
   return startModel;
 }
 
+/**
+ * @deprecated In most cases, you not need RichText, you can use {@link getVirgoByModel} instead.
+ */
 export function getRichTextByModel(model: BaseBlockModel) {
   const blockElement = getBlockElementByModel(model);
-  const richText = blockElement?.querySelector('rich-text') as RichText;
+  const richText = blockElement?.querySelector<RichText>('rich-text');
   if (!richText) return null;
   return richText;
 }
 
+export async function asyncGetRichTextByModel(model: BaseBlockModel) {
+  const blockElement = await asyncGetBlockElementByModel(model);
+  const richText = blockElement?.querySelector<RichText>('rich-text');
+  if (!richText) return null;
+  return richText;
+}
+
+export function getVirgoByModel(model: BaseBlockModel) {
+  if (matchFlavours(model, ['affine:database'])) {
+    // Not support database model since it's may be have multiple Virgo instances.
+    // Support to enter the editing state through the Enter key in the database.
+    return null;
+  }
+  const richText = getRichTextByModel(model);
+  if (!richText) return null;
+  return richText.vEditor;
+}
+
+export async function asyncGetVirgoByModel(model: BaseBlockModel) {
+  if (matchFlavours(model, ['affine:database'])) {
+    // Not support database model since it's may be have multiple Virgo instances.
+    throw new Error('Cannot get virgo by database model!');
+  }
+  const richText = await asyncGetRichTextByModel(model);
+  if (!richText) return null;
+  return richText.vEditor;
+}
+
+// TODO fix find embed model
 export function getModelsByRange(range: Range): BaseBlockModel[] {
+  // filter comment
+  if (
+    range.startContainer.nodeType === Node.COMMENT_NODE ||
+    range.endContainer.nodeType === Node.COMMENT_NODE ||
+    range.commonAncestorContainer.nodeType === Node.COMMENT_NODE
+  ) {
+    return [];
+  }
+
   let commonAncestor = range.commonAncestorContainer as HTMLElement;
   if (commonAncestor.nodeType === Node.TEXT_NODE) {
-    return [getStartModelBySelection()];
+    const model = getStartModelBySelection(range);
+    if (!model) return [];
+    return [model];
   }
+
   if (
     commonAncestor.attributes &&
     !commonAncestor.attributes.getNamedItem(ATTR)
   ) {
-    const parentElement = commonAncestor.closest(`[${ATTR}]`)
+    const parentElement = commonAncestor.closest(ATTR_SELECTOR)
       ?.parentElement as HTMLElement;
     if (parentElement != null) {
       commonAncestor = parentElement;
     }
   }
+
   const intersectedModels: BaseBlockModel[] = [];
-  const blockElementArray = commonAncestor.querySelectorAll(`[${ATTR}]`);
-  if (blockElementArray.length > 1) {
-    blockElementArray.forEach(ele => {
-      const block = ele as ContainerBlock;
-      assertExists(block.model);
-      const blockElement = getBlockElementByModel(block.model);
+  const blockElements = commonAncestor.querySelectorAll(ATTR_SELECTOR);
+
+  if (!blockElements.length) return [];
+
+  if (blockElements.length === 1) {
+    const model = getStartModelBySelection(range);
+    if (!model) return [];
+    return [model];
+  }
+
+  Array.from(blockElements)
+    .filter(element => 'model' in element)
+    .forEach(element => {
+      const block = element as ContainerBlock;
+      if (!block.model) return;
+
       const mainElement = matchFlavours(block.model, ['affine:page'])
-        ? blockElement?.querySelector(
-            '.affine-default-page-block-title-container'
-          )
-        : blockElement?.querySelector('rich-text');
+        ? element?.querySelector('.affine-default-page-block-title-container')
+        : element?.querySelector('rich-text') || element?.querySelector('img');
       if (
         mainElement &&
         range.intersectsNode(mainElement) &&
-        blockElement?.tagName !== 'AFFINE-FRAME'
+        !matchFlavours(block.model, ['affine:note', 'affine:page'])
       ) {
         intersectedModels.push(block.model);
       }
     });
-    return intersectedModels;
-  }
-  return [getStartModelBySelection()];
+  return intersectedModels;
 }
 
 export function getModelByElement(element: Element): BaseBlockModel {
-  const containerBlock = element.closest(`[${ATTR}]`) as ContainerBlock;
-  assertExists(containerBlock.model);
-  return containerBlock.model;
+  const closestBlock = element.closest(ATTR_SELECTOR);
+  assertExists(closestBlock, 'Cannot find block element by element');
+  return getModelByBlockElement(closestBlock);
 }
 
 function mergeRect(a: DOMRect, b: DOMRect) {
@@ -263,127 +495,6 @@ export function getDOMRectByLine(
   }
 }
 
-export function getCurrentRange(selection = window.getSelection()) {
-  // When called on an <iframe> that is not displayed (e.g., where display: none is set) Firefox will return null
-  // See https://developer.mozilla.org/en-US/docs/Web/API/Window/getSelection for more details
-  if (!selection) {
-    throw new Error('Failed to get current range, selection is null');
-  }
-  // Before the user has clicked a freshly loaded page, the rangeCount is 0.
-  // The rangeCount will usually be 1.
-  // But scripting can be used to make the selection contain more than one range.
-  // See https://developer.mozilla.org/en-US/docs/Web/API/Selection/rangeCount for more details.
-  if (selection.rangeCount === 0) {
-    throw new Error('Failed to get current range, rangeCount is 0');
-  }
-  if (selection.rangeCount > 1) {
-    console.warn('getCurrentRange may be wrong, rangeCount > 1');
-  }
-  return selection.getRangeAt(0);
-}
-
-function textWithoutNode(parentNode: Node, currentNode: Node) {
-  let text = '';
-  for (let i = 0; i < parentNode.childNodes.length; i++) {
-    const node = parentNode.childNodes[i];
-
-    if (node !== currentNode || !currentNode.contains(node)) {
-      // @ts-ignore
-      text += node.textContent || node.innerText || '';
-    } else {
-      return text;
-    }
-  }
-  return text;
-}
-
-export function getQuillIndexByNativeSelection(
-  ele: Node | null | undefined,
-  nodeOffset: number,
-  isStart = true
-) {
-  if (
-    ele instanceof Element &&
-    ele.classList.contains('affine-default-page-block-title-container')
-  ) {
-    return (
-      (isStart
-        ? ele.querySelector('input')?.selectionStart
-        : ele.querySelector('input')?.selectionEnd) || 0
-    );
-  }
-
-  let offset = 0;
-  let lastNode = ele;
-  let selfAdded = false;
-  while (
-    ele &&
-    // @ts-ignore
-    (!lastNode?.getAttributeNode ||
-      // @ts-ignore
-      !lastNode.getAttributeNode('contenteditable'))
-  ) {
-    if (ele instanceof Element && ele.hasAttribute(ATTR)) {
-      offset = 0;
-      break;
-    }
-    if (!selfAdded) {
-      selfAdded = true;
-      offset += nodeOffset;
-    } else {
-      offset += textWithoutNode(ele, lastNode as Node).length;
-    }
-    lastNode = ele;
-    ele = ele?.parentNode;
-  }
-  return offset;
-}
-
-/**
- * Get the specific text node and offset by the selected block.
- * The reverse implementation of {@link getQuillIndexByNativeSelection}
- * See also {@link getQuillIndexByNativeSelection}
- *
- * ```ts
- * const [startNode, startOffset] = getTextNodeBySelectedBlock(startBlock);
- * const [endNode, endOffset] = getTextNodeBySelectedBlock(endBlock);
- *
- * const range = new Range();
- * range.setStart(startNode, startOffset);
- * range.setEnd(endNode, endOffset);
- *
- * const selection = window.getSelection();
- * selection.removeAllRanges();
- * selection.addRange(range);
- * ```
- */
-export function getTextNodeBySelectedBlock(selectedBlock: SelectedBlock) {
-  const blockElement = getBlockById(selectedBlock.id);
-  const offset = selectedBlock.startPos ?? selectedBlock.endPos ?? 0;
-  if (!blockElement) {
-    throw new Error(
-      'Failed to get block element, block id: ' + selectedBlock.id
-    );
-  }
-  const richText = blockElement.querySelector('rich-text');
-  if (!richText) {
-    throw new Error('Failed to get rich text element');
-  }
-  const quill = richText.quill;
-
-  const [leaf, leafOffset]: [LeafBlot, number] = quill.getLeaf(offset);
-  return [leaf.domNode, leafOffset] as const;
-}
-
-export function getAllBlocks() {
-  const blocks = Array.from(document.querySelectorAll(`[${ATTR}]`));
-  return blocks.filter(item => {
-    return (
-      item.tagName !== 'AFFINE-DEFAULT-PAGE' && item.tagName !== 'AFFINE-FRAME'
-    );
-  });
-}
-
 export function isInsideRichText(element: unknown): element is RichText {
   // Fool-proofing
   if (element instanceof Event) {
@@ -397,21 +508,61 @@ export function isInsideRichText(element: unknown): element is RichText {
   return !!richText;
 }
 
-export function isTitleElement(
-  element: unknown
-): element is HTMLTextAreaElement | HTMLInputElement {
+export function isInsidePageTitle(element: unknown): boolean {
+  const editor = activeEditorManager.getActiveEditor();
+  const titleElement = (editor ?? document).querySelector(
+    '[data-block-is-title="true"]'
+  );
+  if (!titleElement) return false;
+
+  return titleElement.contains(element as Node);
+}
+
+export function isInsideEdgelessTextEditor(element: unknown): boolean {
+  const editor = activeEditorManager.getActiveEditor();
+  const textElement = (editor ?? document).querySelector(
+    'edgeless-text-editor'
+  );
+  if (!textElement) return false;
+
+  return textElement.contains(element as Node);
+}
+
+export function isToggleIcon(element: unknown): element is SVGPathElement {
   return (
-    (element instanceof HTMLTextAreaElement ||
-      element instanceof HTMLInputElement) &&
-    element.getAttribute('data-block-is-title') === 'true'
+    element instanceof SVGPathElement &&
+    element.getAttribute('data-is-toggle-icon') === 'true'
   );
 }
 
 export function isDatabaseInput(element: unknown): boolean {
   return (
     element instanceof HTMLElement &&
-    element.getAttribute('data-block-is-database-input') === 'true'
+    element.getAttribute('data-virgo-root') === 'true' &&
+    !!element.closest('affine-database')
   );
+}
+
+export function isDatabaseCell(element: unknown): boolean {
+  return (
+    element instanceof HTMLElement &&
+    element.tagName === 'affine-database-cell-container'.toUpperCase()
+  );
+}
+
+export function isRawInput(element: unknown): boolean {
+  return (
+    element instanceof HTMLInputElement && !!element.closest('affine-database')
+  );
+}
+
+export function isInsideDatabaseTitle(element: unknown): boolean {
+  const titleElement = document.querySelector(
+    '[data-block-is-database-title="true"]'
+  );
+  if (!titleElement) return false;
+
+  return titleElement.contains(element as Node);
 }
 
 export function isCaptionElement(node: unknown): node is HTMLInputElement {
@@ -428,4 +579,599 @@ export function getElementFromEventTarget(
   if (target instanceof Element) return target;
   if (target instanceof Node) target.parentElement;
   return null;
+}
+
+/**
+ * Returns `16` if node is contained in the parent.
+ * Otherwise return `0`.
+ */
+export function contains(parent: Element, node: Element) {
+  return (
+    parent.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_CONTAINED_BY
+  );
+}
+
+/**
+ * Returns `true` if node is contained in the elements.
+ */
+export function isContainedIn(elements: Element[], node: Element) {
+  return elements.some(parent => contains(parent, node));
+}
+
+/**
+ * Returns `true` if element has `data-block-id` attribute.
+ */
+function hasBlockId(element: Element): element is BlockComponentElement {
+  return element.hasAttribute(ATTR);
+}
+
+/**
+ * Returns `true` if element is default page.
+ */
+export function isDefaultPage({ tagName }: Element) {
+  return tagName === 'AFFINE-DEFAULT-PAGE';
+}
+
+/**
+ * Returns `true` if element is edgeless page.
+ */
+export function isEdgelessPage({ tagName }: Element) {
+  return tagName === 'AFFINE-EDGELESS-PAGE';
+}
+
+/**
+ * Returns `true` if element is default/edgeless page or note.
+ */
+function isPageOrNoteOrSurface(element: Element) {
+  return (
+    isDefaultPage(element) ||
+    isEdgelessPage(element) ||
+    isNote(element) ||
+    isSurface(element)
+  );
+}
+
+/**
+ * Returns `true` if element is not page or note.
+ */
+function isBlock(element: BlockComponentElement) {
+  return !isPageOrNoteOrSurface(element);
+}
+
+/**
+ * Returns `true` if element is image.
+ */
+export function isImage({ tagName }: Element) {
+  return tagName === 'AFFINE-IMAGE';
+}
+
+/**
+ * Returns `true` if element is note.
+ */
+function isNote({ tagName }: Element) {
+  return tagName === 'AFFINE-NOTE';
+}
+
+/**
+ * Returns `true` if element is surface.
+ */
+function isSurface({ tagName }: Element) {
+  return tagName === 'AFFINE-SURFACE';
+}
+
+/**
+ * Returns `true` if element is embed.
+ * @deprecated Use {@link isImage} instead.
+ */
+function isEmbed({ tagName }: Element) {
+  return tagName === 'AFFINE-IMAGE';
+}
+
+/**
+ * Returns `true` if element is database.
+ */
+function isDatabase({ tagName }: Element) {
+  return tagName === 'AFFINE-DATABASE-TABLE' || tagName === 'AFFINE-DATABASE';
+}
+
+/**
+ * Returns `true` if element is edgeless child note.
+ */
+export function isEdgelessChildNote({ classList }: Element) {
+  return classList.contains('affine-edgeless-child-note');
+}
+
+/**
+ * Returns the closest block element by a point in the rect.
+ *
+ * ```
+ * ############### block
+ * ||############# block
+ * ||||########### block
+ * ||||    ...
+ * ||||  y - 2 * n
+ * ||||    ...
+ * ||||----------- cursor
+ * ||||    ...
+ * ||||  y + 2 * n
+ * ||||    ...
+ * ||||########### block
+ * ||############# block
+ * ############### block
+ * ```
+ */
+export function getClosestBlockElementByPoint(
+  point: Point,
+  state: {
+    rect?: Rect;
+    container?: Element;
+    snapToEdge?: {
+      x: boolean;
+      y: boolean;
+    };
+  } | null = null,
+  scale = 1
+): Element | null {
+  const { y } = point;
+
+  let container;
+  let element = null;
+  let bounds = null;
+  let childBounds = null;
+  let diff = 0;
+  let n = 1;
+
+  if (state) {
+    const { snapToEdge = { x: true, y: false } } = state;
+    container = state.container;
+    const rect = state.rect || container?.getBoundingClientRect();
+    if (rect) {
+      if (snapToEdge.x) {
+        point.x = Math.min(
+          Math.max(point.x, rect.left) + PADDING_LEFT * scale - 1,
+          rect.right - PADDING_LEFT * scale - 1
+        );
+      }
+      if (snapToEdge.y) {
+        // TODO handle scale
+        if (scale !== 1) {
+          console.warn('scale is not supported yet');
+        }
+        point.y = clamp(point.y, rect.top + 1, rect.bottom - 1);
+      }
+    }
+  }
+
+  // find block element
+  element = findBlockElement(
+    document.elementsFromPoint(point.x, point.y),
+    container
+  );
+
+  // Horizontal direction: for nested structures
+  if (element) {
+    // Database
+    if (isDatabase(element)) {
+      bounds = element.getBoundingClientRect();
+      const rows = getDatabaseBlockRowsElement(element);
+      assertExists(rows);
+      childBounds = rows.getBoundingClientRect();
+
+      if (childBounds.height) {
+        if (point.y < childBounds.top || point.y > childBounds.bottom) {
+          return element;
+        }
+        childBounds = null;
+      } else {
+        return element;
+      }
+    } else {
+      // Indented paragraphs or list
+      bounds = getRectByBlockElement(element);
+      childBounds = element
+        .querySelector('.affine-block-children-container')
+        ?.firstElementChild?.getBoundingClientRect();
+
+      if (childBounds && childBounds.height) {
+        if (bounds.x < point.x && point.x <= childBounds.x) {
+          return element;
+        }
+        childBounds = null;
+      } else {
+        return element;
+      }
+    }
+
+    bounds = null;
+    element = null;
+  }
+
+  // Vertical direction
+  do {
+    point.y = y - n * 2;
+
+    if (n < 0) n--;
+    n *= -1;
+
+    // find block element
+    element = findBlockElement(
+      document.elementsFromPoint(point.x, point.y),
+      container
+    );
+
+    if (element) {
+      bounds = getRectByBlockElement(element);
+      diff = bounds.bottom - point.y;
+      if (diff >= 0 && diff <= STEPS * 2) {
+        return element;
+      }
+      diff = point.y - bounds.top;
+      if (diff >= 0 && diff <= STEPS * 2) {
+        return element;
+      }
+      bounds = null;
+      element = null;
+    }
+  } while (n <= STEPS);
+
+  return element;
+}
+
+/**
+ * Returns the closest block element by element that does not contain the page element and note element.
+ */
+export function getClosestBlockElementByElement(
+  element: Element | null
+): BlockComponentElement | null {
+  if (!element) return null;
+  if (hasBlockId(element) && isBlock(element)) {
+    return element;
+  }
+  const blockElement = element.closest<BlockComponentElement>(ATTR_SELECTOR);
+  if (blockElement && isBlock(blockElement)) {
+    return blockElement;
+  }
+  return null;
+}
+
+/**
+ * Returns the model of the block element.
+ */
+export function getModelByBlockElement(element: Element) {
+  const containerBlock = element as ContainerBlock;
+  // In extreme cases, the block may be loading, and the model is not yet available.
+  // For example
+  // // `<loader-element data-block-id="586080495:15" data-service-loading="true"></loader-element>`
+  if ('hostModel' in containerBlock) {
+    const loader = containerBlock as Loader;
+    assertExists(loader.hostModel);
+    return loader.hostModel;
+  }
+  assertExists(containerBlock.model);
+  return containerBlock.model;
+}
+
+/**
+ * Returns all block elements in an element.
+ */
+export function getBlockElementsByElement(
+  element: BlockComponentElement | Document | Element = document
+) {
+  return Array.from(
+    element.querySelectorAll<BlockComponentElement>(ATTR_SELECTOR)
+  ).filter(isBlock);
+}
+
+/**
+ * Returns the block element by id with the parent.
+ */
+export function getBlockElementById(
+  id: string,
+  parent:
+    | BlockComponentElement
+    | Document
+    | Element = activeEditorManager.getActiveEditor() ?? document
+) {
+  return parent.querySelector(`[${ATTR}="${id}"]`);
+}
+
+/**
+ * Returns the closest note block element by id with the parent.
+ */
+export function getClosestNoteBlockElementById(
+  id: string,
+  parent: BlockComponentElement | Document | Element = document
+) {
+  const element = getBlockElementById(id, parent);
+  if (!element) return null;
+  if (isNote(element)) return element;
+  return element.closest('affine-note');
+}
+
+/**
+ * Returns rect of the block element.
+ *
+ * Compatible with Safari!
+ * https://github.com/toeverything/blocksuite/issues/902
+ * https://github.com/toeverything/blocksuite/pull/1121
+ */
+export function getRectByBlockElement(
+  element: Element | BlockComponentElement
+) {
+  if (isDatabase(element)) return element.getBoundingClientRect();
+  return (element.firstElementChild ?? element).getBoundingClientRect();
+}
+
+/**
+ * Returns selected state rect of the block element.
+ */
+export function getSelectedStateRectByBlockElement(
+  element: Element | BlockComponentElement
+) {
+  if (isImage(element)) {
+    const wrapper = element.querySelector('.affine-image-wrapper');
+    const resizable = element.querySelector('.resizable-img');
+    assertExists(wrapper);
+    assertExists(resizable);
+    const w = Rect.fromDOM(wrapper);
+    const r = Rect.fromDOM(resizable);
+    const d = w.intersect(r);
+    return d.toDOMRect();
+  }
+  return getRectByBlockElement(element);
+}
+
+/**
+ * Returns block elements excluding their subtrees.
+ * Only keep block elements of same level.
+ */
+export function getBlockElementsExcludeSubtrees(
+  elements: Element[] | BlockComponentElement[]
+) {
+  if (elements.length <= 1) return elements;
+  let parent = elements[0];
+  return elements.filter((node, index) => {
+    if (index === 0) return true;
+    if (contains(parent, node)) {
+      return false;
+    } else {
+      parent = node;
+      return true;
+    }
+  });
+}
+
+/**
+ * Returns block elements including their subtrees.
+ */
+export function getBlockElementsIncludeSubtrees(elements: Element[]) {
+  return elements.reduce<Element[]>((elements, element) => {
+    if (isDatabase(element)) {
+      elements.push(element);
+    } else {
+      elements.push(element, ...getBlockElementsByElement(element));
+    }
+    return elements;
+  }, []);
+}
+
+/**
+ * Find block element from an `Element[]`.
+ * In Chrome/Safari, `document.elementsFromPoint` does not include `affine-image`.
+ */
+function findBlockElement(elements: Element[], parent?: Element) {
+  const len = elements.length;
+  let element = null;
+  let i = 0;
+  while (i < len) {
+    element = elements[i];
+    i++;
+    // if parent does not contain element, it's ignored
+    if (parent && !contains(parent, element)) continue;
+    if (hasBlockId(element) && isBlock(element)) return element;
+    if (isEmbed(element)) {
+      const element = elements[i];
+      if (i < len && hasBlockId(element) && isBlock(element)) {
+        return elements[i];
+      }
+      return getClosestBlockElementByElement(element);
+    }
+  }
+  return null;
+}
+
+/**
+ * query current mode whether is light or dark
+ */
+export function queryCurrentMode(): 'light' | 'dark' {
+  const mode = getComputedStyle(document.documentElement).getPropertyValue(
+    '--affine-theme-mode'
+  );
+
+  if (mode.trim() === 'dark') {
+    return 'dark';
+  } else {
+    return 'light';
+  }
+}
+
+/**
+ * Get hovering note with given a point in edgeless mode.
+ */
+export function getHoveringNote(point: Point) {
+  return (
+    document.elementsFromPoint(point.x, point.y).find(isEdgelessChildNote) ||
+    null
+  );
+}
+
+/**
+ * Returns `true` if the database is empty.
+ */
+export function isEmptyDatabase(model: BaseBlockModel) {
+  return matchFlavours(model, ['affine:database']) && model.isEmpty();
+}
+
+/**
+ * Gets the table of the database.
+ */
+export function getDatabaseBlockTableElement(element: Element) {
+  return element.querySelector('.affine-database-block-table');
+}
+
+/**
+ * Gets the column header of the database.
+ */
+export function getDatabaseBlockColumnHeaderElement(element: Element) {
+  return element.querySelector('.affine-database-column-header');
+}
+
+/**
+ * Gets the rows of the database.
+ */
+export function getDatabaseBlockRowsElement(element: Element) {
+  return element.querySelector('.affine-database-block-rows');
+}
+
+/**
+ * Returns a flag for the drop target.
+ */
+export enum DropFlags {
+  Normal,
+  Database,
+  EmptyDatabase,
+}
+
+/**
+ * Gets the drop rect by block and point.
+ */
+export function getDropRectByPoint(
+  point: Point,
+  model: BaseBlockModel,
+  element: Element
+): {
+  rect: DOMRect;
+  flag: DropFlags;
+} {
+  const result = {
+    rect: getRectByBlockElement(element),
+    flag: DropFlags.Normal,
+  };
+
+  const isDatabase = matchFlavours(model, ['affine:database'] as const);
+
+  if (isDatabase) {
+    const table = getDatabaseBlockTableElement(element);
+    assertExists(table);
+    let bounds = table.getBoundingClientRect();
+    if (model.isEmpty()) {
+      result.flag = DropFlags.EmptyDatabase;
+
+      if (point.y < bounds.top) return result;
+
+      const header = getDatabaseBlockColumnHeaderElement(element);
+      assertExists(header);
+      bounds = header.getBoundingClientRect();
+      result.rect = new DOMRect(
+        result.rect.left,
+        bounds.bottom,
+        result.rect.width,
+        1
+      );
+    } else {
+      result.flag = DropFlags.Database;
+      const rows = getDatabaseBlockRowsElement(element);
+      assertExists(rows);
+      const rowsBounds = rows.getBoundingClientRect();
+
+      if (point.y < rowsBounds.top || point.y > rowsBounds.bottom)
+        return result;
+
+      const elements = document.elementsFromPoint(point.x, point.y);
+      const len = elements.length;
+      let e;
+      let i = 0;
+      for (; i < len; i++) {
+        e = elements[i];
+
+        if (e.classList.contains('affine-database-block-row-cell-content')) {
+          result.rect = getCellRect(e, bounds);
+          return result;
+        }
+
+        if (e.classList.contains('affine-database-block-row')) {
+          e = e.querySelector(ATTR_SELECTOR);
+          assertExists(e);
+          result.rect = getCellRect(e, bounds);
+          return result;
+        }
+      }
+    }
+  } else {
+    const parent = element.parentElement;
+    if (parent?.classList.contains('affine-database-block-row-cell-content')) {
+      result.flag = DropFlags.Database;
+      result.rect = getCellRect(parent);
+      return result;
+    }
+  }
+
+  return result;
+}
+
+function getCellRect(element: Element, bounds?: DOMRect) {
+  if (!bounds) {
+    const table = element.closest('.affine-database-block-table');
+    assertExists(table);
+    bounds = table.getBoundingClientRect();
+  }
+  // affine-database-block-row-cell
+  const col = element.parentElement;
+  assertExists(col);
+  // affine-database-block-row
+  const row = col.parentElement;
+  assertExists(row);
+  const colRect = col.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  return new DOMRect(
+    bounds.left,
+    rowRect.top,
+    colRect.right - bounds.left,
+    colRect.height
+  );
+}
+
+/**
+ * Returns `true` if the target is `Element`.
+ */
+export function isElement(target: EventTarget | null) {
+  return target && target instanceof Element;
+}
+
+/**
+ * Returns `true` if the target is `affine-selected-blocks`.
+ */
+export function isSelectedBlocks(target: Element) {
+  return target.tagName === 'AFFINE-SELECTED-BLOCKS';
+}
+
+/**
+ * Returns `true` if the target is `affine-drag-handle`.
+ */
+export function isDragHandle(target: Element) {
+  return target.tagName === 'AFFINE-DRAG-HANDLE';
+}
+
+/**
+ * Returns `true` if block elements have database block element.
+ */
+export function hasDatabase(elements: Element[]) {
+  return elements.some(isDatabase);
+}
+
+/**
+ * Returns the last note element.
+ */
+export function getLastNoteBlockElement(parent: Element) {
+  return parent.querySelector('affine-note:last-of-type');
 }

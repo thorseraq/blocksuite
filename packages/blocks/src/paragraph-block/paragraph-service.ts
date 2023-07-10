@@ -1,23 +1,21 @@
+import type { BaseBlockModel } from '@blocksuite/store';
+
+import type { BlockRange, SerializedBlock } from '../__internal__/index.js';
+import type { BlockTransformContext } from '../__internal__/index.js';
 import { BaseService } from '../__internal__/service/index.js';
+import { json2block } from '../__internal__/service/json2block.js';
 import type { ParagraphBlockModel } from './paragraph-model.js';
 
-export class ParagraphBlockService extends BaseService {
-  block2html(
+export class ParagraphBlockService extends BaseService<ParagraphBlockModel> {
+  override block2html(
     model: ParagraphBlockModel,
-    childText: string,
-    previousSiblingId: string,
-    nextSiblingId: string,
-    begin?: number,
-    end?: number
+    { childText = '', begin, end }: BlockTransformContext = {}
   ) {
-    const text = super.block2html(
-      model,
+    const text = super.block2html(model, {
       childText,
-      previousSiblingId,
-      nextSiblingId,
       begin,
-      end
-    );
+      end,
+    });
     switch (model.type) {
       case 'text':
         return `<p>${text}</p>`;
@@ -33,6 +31,18 @@ export class ParagraphBlockService extends BaseService {
       default:
         return text;
     }
+  }
+
+  override async json2Block(
+    focusedBlockModel: BaseBlockModel,
+    pastedBlocks: SerializedBlock[],
+    range?: BlockRange
+  ) {
+    const convertToPastedIfEmpty = focusedBlockModel.type !== 'text';
+    return json2block(focusedBlockModel, pastedBlocks, {
+      range,
+      convertToPastedIfEmpty,
+    });
   }
 }
 

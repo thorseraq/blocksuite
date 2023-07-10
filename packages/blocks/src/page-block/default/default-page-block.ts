@@ -1,89 +1,66 @@
 /// <reference types="vite/client" />
-import { BLOCK_ID_ATTR, SCROLL_THRESHOLD } from '@blocksuite/global/config';
-import { assertExists } from '@blocksuite/global/utils';
-import { Utils } from '@blocksuite/store';
-import {
-  BaseBlockModel,
-  DisposableGroup,
-  Page,
-  Signal,
-  Text,
-} from '@blocksuite/store';
-import autosize from 'autosize';
-import { css, html } from 'lit';
-import { customElement, property, query, state } from 'lit/decorators.js';
+import './meta-data/meta-data.js';
 
 import {
-  asyncFocusRichText,
-  BlockChildrenContainer,
-  type BlockHost,
-  getCurrentRange,
-  getRichTextByModel,
-  hotkey,
-  isMultiBlockRange,
+  BLOCK_ID_ATTR,
+  PAGE_BLOCK_CHILD_PADDING,
+  PAGE_BLOCK_PADDING_BOTTOM,
+} from '@blocksuite/global/config';
+import { assertExists } from '@blocksuite/global/utils';
+import { BlockElement } from '@blocksuite/lit';
+import {
+  type BaseBlockModel,
+  matchFlavours,
+  Slot,
+  Utils,
+} from '@blocksuite/store';
+import { VEditor } from '@blocksuite/virgo';
+import { css, html } from 'lit';
+import { customElement, query, state } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
+
+import { PageClipboard } from '../../__internal__/clipboard/index.js';
+import type {
+  BlockHost,
+  EditingState,
   SelectionPosition,
 } from '../../__internal__/index.js';
-import { getService } from '../../__internal__/service.js';
-import { NonShadowLitElement } from '../../__internal__/utils/lit.js';
+import {
+  asyncFocusRichText,
+  hotkey,
+  HOTKEY_SCOPE_TYPE,
+  Rect,
+} from '../../__internal__/index.js';
+import { getService, registerService } from '../../__internal__/service.js';
+import { activeEditorManager } from '../../__internal__/utils/active-editor-manager.js';
 import type { DragHandle } from '../../components/index.js';
-import type { PageBlockModel } from '../index.js';
+import { PageBlockService } from '../index.js';
+import type { PageBlockModel } from '../page-model.js';
 import { bindHotkeys, removeHotkeys } from '../utils/bind-hotkey.js';
-import { deleteModelsByRange, tryUpdateFrameSize } from '../utils/index.js';
-import {
-  CodeBlockOptionContainer,
-  EmbedEditingContainer,
-  EmbedSelectedRectsContainer,
-  FrameSelectionRect,
-  SelectedRectsContainer,
-} from './components.js';
-import { DefaultSelectionManager } from './selection-manager.js';
-import {
-  createDragHandle,
-  getAllowSelectedBlocks,
-  isControlledKeyboardEvent,
-} from './utils.js';
+import { tryUpdateNoteSize } from '../utils/index.js';
+import { DraggingArea } from './components.js';
+import type { DefaultPageService } from './default-page-service.js';
+import { createDragHandle, getAllowSelectedBlocks } from './utils.js';
 
-export interface EmbedEditingState {
-  position: { x: number; y: number };
-  model: BaseBlockModel;
-}
-
-export interface ViewportState {
-  left: number;
-  top: number;
-  scrollLeft: number;
-  scrollTop: number;
-  scrollHeight: number;
-  clientHeight: number;
-  clientWidth: number;
-  // scrollWidth: number,
-}
-
-export type CodeBlockOption = EmbedEditingState;
-
-export interface DefaultPageSignals {
-  updateFrameSelectionRect: Signal<DOMRect | null>;
-  updateSelectedRects: Signal<DOMRect[]>;
-  updateEmbedRects: Signal<DOMRect[]>;
-  updateEmbedEditingState: Signal<EmbedEditingState | null>;
-  updateCodeBlockOption: Signal<CodeBlockOption | null>;
-  nativeSelection: Signal<boolean>;
-}
-
-// https://stackoverflow.com/a/2345915
-function focusTextEnd(input: HTMLTextAreaElement) {
-  const current = input.value;
-  input.focus();
-  input.value = '';
-  input.value = current;
+export interface DefaultSelectionSlots {
+  draggingAreaUpdated: Slot<DOMRect | null>;
+  selectedRectsUpdated: Slot<DOMRect[]>;
+  /**
+   * @deprecated
+   */
+  embedRectsUpdated: Slot<DOMRect[]>;
+  /**
+   * @deprecated
+   */
+  embedEditingStateUpdated: Slot<EditingState | null>;
 }
 
 @customElement('affine-default-page')
 export class DefaultPageBlockComponent
-  extends NonShadowLitElement
+  extends BlockElement<PageBlockModel, DefaultPageService>
   implements BlockHost
 {
-  static styles = css`
+  static override styles = css`
     .affine-default-viewport {
       position: relative;
       overflow-x: hidden;
@@ -92,29 +69,26 @@ export class DefaultPageBlockComponent
     }
 
     .affine-default-page-block-container {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
       font-family: var(--affine-font-family);
       font-size: var(--affine-font-base);
       line-height: var(--affine-line-height);
-      color: var(--affine-text-color);
+      color: var(--affine-text-primary-color);
       font-weight: 400;
-      width: var(--affine-editor-width);
+      max-width: var(--affine-editor-width);
       margin: 0 auto;
       /* cursor: crosshair; */
       cursor: default;
+      padding-bottom: ${PAGE_BLOCK_PADDING_BOTTOM}px;
 
-      min-height: calc(100% - 78px);
-      height: auto;
-      overflow: hidden;
-      padding-bottom: 150px;
-    }
-
-    .affine-default-page-block-container > .affine-block-children-container {
-      padding-left: 0;
+      /* Leave a place for drag-handle */
+      padding-left: ${PAGE_BLOCK_CHILD_PADDING}px;
+      padding-right: ${PAGE_BLOCK_CHILD_PADDING}px;
     }
 
     .affine-default-page-block-title {
-      /* autosize will calculate height automatically */
-      height: 0;
       width: 100%;
       font-size: 40px;
       line-height: 50px;
@@ -124,304 +98,308 @@ export class DefaultPageBlockComponent
       border: 0;
       font-family: inherit;
       color: inherit;
+      cursor: text;
+      padding: 38px 0;
     }
 
-    .affine-default-page-block-title::placeholder {
+    .affine-default-page-block-title-empty::before {
+      content: 'Title';
       color: var(--affine-placeholder-color);
+      position: absolute;
+      opacity: 0.5;
     }
 
     .affine-default-page-block-title:disabled {
       background-color: transparent;
     }
 
+    /*
     .affine-default-page-block-title-container {
-      margin-top: 78px;
+    }
+    */
+
+    .affine-block-element {
+      display: block;
     }
   `;
 
-  @property()
-  page!: Page;
-
-  @property()
-  readonly = false;
-
   flavour = 'affine:page' as const;
 
-  selection!: DefaultSelectionManager;
+  clipboard = new PageClipboard(this);
+
   getService = getService;
 
   lastSelectionPosition: SelectionPosition = 'start';
 
   /**
-   * shard components
+   * Shared components
    */
-  components: {
-    dragHandle: DragHandle | null;
-    resizeObserver: ResizeObserver | null;
-  } = {
-    dragHandle: null,
-    resizeObserver: null,
+  components = {
+    dragHandle: <DragHandle | null>null,
   };
 
-  @property()
   mouseRoot!: HTMLElement;
 
-  @state()
-  frameSelectionRect: DOMRect | null = null;
+  get selection() {
+    return this.service?.selection;
+  }
 
   @state()
-  viewportState: ViewportState = {
-    left: 0,
-    top: 0,
-    scrollLeft: 0,
-    scrollTop: 0,
-    scrollHeight: 0,
-    clientHeight: 0,
-    clientWidth: 0,
-  };
+  private _draggingArea: DOMRect | null = null;
 
   @state()
-  selectedRects: DOMRect[] = [];
+  private _selectedRects: DOMRect[] = [];
 
   @state()
-  selectEmbedRects: DOMRect[] = [];
+  private _isComposing = false;
 
-  @state()
-  embedEditingState!: EmbedEditingState | null;
-
-  @state()
-  codeBlockOption!: CodeBlockOption | null;
+  private _resizeObserver: ResizeObserver | null = null;
 
   @query('.affine-default-viewport')
-  defaultViewportElement!: HTMLDivElement;
+  viewportElement!: HTMLDivElement;
 
-  signals: DefaultPageSignals = {
-    updateFrameSelectionRect: new Signal<DOMRect | null>(),
-    updateSelectedRects: new Signal<DOMRect[]>(),
-    updateEmbedRects: new Signal<DOMRect[]>(),
-    updateEmbedEditingState: new Signal<EmbedEditingState | null>(),
-    updateCodeBlockOption: new Signal<CodeBlockOption | null>(),
-    nativeSelection: new Signal<boolean>(),
+  @query('.affine-default-page-block-container')
+  pageBlockContainer!: HTMLDivElement;
+
+  slots = {
+    draggingAreaUpdated: new Slot<DOMRect | null>(),
+    selectedRectsUpdated: new Slot<DOMRect[]>(),
+    embedRectsUpdated: new Slot<DOMRect[]>(),
+    embedEditingStateUpdated: new Slot<EditingState | null>(),
+    pageLinkClicked: new Slot<{
+      pageId: string;
+      blockId?: string;
+    }>(),
+    tagClicked: new Slot<{ tagId: string }>(),
   };
 
-  public isCompositionStart = false;
-
-  @property({ hasChanged: () => true })
-  model!: PageBlockModel;
-
   @query('.affine-default-page-block-title')
-  private _title!: HTMLTextAreaElement;
+  private _titleContainer!: HTMLElement;
+  private _titleVEditor: VEditor | null = null;
 
-  private async _onTitleKeyDown(e: KeyboardEvent) {
+  get titleVEditor() {
+    assertExists(this._titleVEditor);
+    return this._titleVEditor;
+  }
+
+  get innerRect() {
+    const { left, width } = this.pageBlockContainer.getBoundingClientRect();
+    assertExists(this.selection);
+    const { clientHeight, top } = this.selection.state.viewport;
+    return Rect.fromLWTH(
+      left,
+      Math.min(width, window.innerWidth),
+      top,
+      Math.min(clientHeight, window.innerHeight)
+    );
+  }
+
+  private _initTitleVEditor() {
+    const { model } = this;
+    const title = model.title;
+
+    this._titleVEditor = new VEditor(title.yText, {
+      active: () => activeEditorManager.isActive(this),
+    });
+    this._titleVEditor.mount(this._titleContainer);
+    this._titleVEditor.bindHandlers({
+      keydown: this._onTitleKeyDown,
+      paste: this._onTitlePaste,
+    });
+
+    // Workaround for virgo skips composition event
+    this._disposables.addFromEvent(
+      this._titleContainer,
+      'compositionstart',
+      () => (this._isComposing = true)
+    );
+    this._disposables.addFromEvent(
+      this._titleContainer,
+      'compositionend',
+      () => (this._isComposing = false)
+    );
+
+    this.model.title.yText.observe(() => {
+      this._updateTitleInMeta();
+      this.requestUpdate();
+    });
+    this._titleVEditor.setReadonly(this.page.readonly);
+  }
+
+  private _updateTitleInMeta = () => {
+    this.page.workspace.setPageMeta(this.page.id, {
+      title: this.model.title.toString(),
+    });
+  };
+
+  private _onTitleKeyDown = (e: KeyboardEvent) => {
+    if (e.isComposing || this.page.readonly) return;
     const hasContent = !this.page.isEmpty;
-    const { page, model, _title } = this;
+    const { page, model } = this;
+    const defaultNote = model.children.find(
+      child => child.flavour === 'affine:note'
+    );
 
     if (e.key === 'Enter' && hasContent) {
-      assertExists(_title.selectionStart);
-      const titleCursorIndex = _title.selectionStart;
-      const contentLeft = _title.value.slice(0, titleCursorIndex);
-      const contentRight = _title.value.slice(titleCursorIndex);
-
-      const defaultFrame = model.children[0];
-      const props = {
-        flavour: 'affine:paragraph',
-        text: new Text(contentRight),
-      };
-      // Fixes: https://github.com/toeverything/blocksuite/pull/1008
-      //  A workaround that fixes rich-text still be listened when press enter on title.
-      //  Other solutions like `quill.disable()` or remove all listener when blur will won't work.
-      const block = defaultFrame.children.find(block =>
-        getRichTextByModel(block)
+      e.preventDefault();
+      assertExists(this._titleVEditor);
+      const vRange = this._titleVEditor.getVRange();
+      assertExists(vRange);
+      const right = model.title.split(vRange.index);
+      const newFirstParagraphId = page.addBlock(
+        'affine:paragraph',
+        { text: right },
+        defaultNote,
+        0
       );
-      if (block) {
-        await asyncFocusRichText(this.page, block.id);
-      }
-      const newFirstParagraphId = page.addBlock(props, defaultFrame, 0);
-      page.updateBlock(model, { title: contentLeft });
-      page.workspace.setPageMeta(page.id, { title: contentLeft });
-      asyncFocusRichText(this.page, newFirstParagraphId);
+      asyncFocusRichText(page, newFirstParagraphId);
+      return;
     } else if (e.key === 'ArrowDown' && hasContent) {
       e.preventDefault();
-      asyncFocusRichText(page, model.children[0].children[0].id);
-    }
-  }
-
-  private _onTitleInput(e: InputEvent) {
-    const { page } = this;
-
-    if (!this.model.id) {
-      const title = (e.target as HTMLTextAreaElement).value;
-      const pageId = page.addBlock({ flavour: 'affine:page', title });
-      const frameId = page.addBlock({ flavour: 'affine:frame' }, pageId);
-      page.addBlock({ flavour: 'affine:paragraph' }, frameId);
-      return;
-    }
-
-    let title = (e.target as HTMLTextAreaElement).value;
-    if (title.endsWith('\n')) {
-      title = title.slice(0, -1);
-    }
-    page.updateBlock(this.model, { title });
-    page.workspace.setPageMeta(page.id, { title });
-  }
-
-  // FIXME: keep embed selected rects after scroll
-  // TODO: disable it on scroll's thresold
-  private _onWheel = (e: WheelEvent) => {
-    if (this.selection.state.type === 'native') {
-      if (this.selection.state.startRange && this.selection.state.rangePoint) {
-        return;
+      const firstText = defaultNote?.children.find(block =>
+        matchFlavours(block, ['affine:paragraph', 'affine:list', 'affine:code'])
+      );
+      if (firstText) {
+        asyncFocusRichText(page, firstText.id);
+      } else {
+        const newFirstParagraphId = page.addBlock(
+          'affine:paragraph',
+          {},
+          defaultNote,
+          0
+        );
+        asyncFocusRichText(page, newFirstParagraphId);
       }
-    }
-
-    if (this.selection.state.type !== 'block') {
-      this.selection.state.clear();
-      // if (this.selection.state.type !== 'embed') {
-      this.signals.updateEmbedRects.emit([]);
-      this.signals.updateEmbedEditingState.emit(null);
-      // }
       return;
-    }
-
-    const { scrollTop, scrollHeight, clientHeight } = this.viewportState;
-    const max = scrollHeight - clientHeight;
-    let top = e.deltaY / 2;
-    if (top > 0) {
-      if (Math.ceil(scrollTop) === max) return;
-
-      top = Math.min(top, max - scrollTop);
-    } else if (top < 0) {
-      if (scrollTop === 0) return;
-
-      top = Math.max(top, -scrollTop);
-    }
-
-    const { startPoint, endPoint } = this.selection.state;
-    if (startPoint && endPoint) {
+    } else if (e.key === 'Tab') {
       e.preventDefault();
+    }
+  };
 
-      this.viewportState.scrollTop += top;
-      // FIXME: need smooth
-      this.defaultViewportElement.scrollTop += top;
+  private _onTitlePaste = (event: ClipboardEvent) => {
+    const vEditor = this._titleVEditor;
+    if (!vEditor) return;
+    const vRange = vEditor.getVRange();
+    if (!vRange) return;
 
-      endPoint.y += top;
-      this.selection.updateSelectionRect(startPoint, endPoint);
+    const data = event.clipboardData?.getData('text/plain');
+    if (data) {
+      const text = data.replace(/(\r\n|\r|\n)/g, '\n');
+      vEditor.insertText(vRange, text);
+      vEditor.setVRange({
+        index: vRange.index + text.length,
+        length: 0,
+      });
+    }
+  };
+
+  // TODO: disable it on scroll's threshold
+  private _onWheel = (e: WheelEvent) => {
+    assertExists(this.selection);
+    const { selection } = this;
+    const { state } = selection;
+    const { type, viewport } = state;
+
+    if (type === 'native') {
       return;
+    }
+
+    if (type.startsWith('block')) {
+      e.preventDefault();
+      const { viewportElement } = this;
+      const { scrollTop, scrollHeight, clientHeight } = viewport;
+      const max = scrollHeight - clientHeight;
+      let top = e.deltaY / 2;
+      if (top > 0) {
+        if (Math.ceil(scrollTop) === max) return;
+
+        top = Math.min(top, max - scrollTop);
+      } else if (top < 0) {
+        if (scrollTop === 0) return;
+
+        top = Math.max(top, -scrollTop);
+      }
+
+      viewport.scrollTop += top;
+      // FIXME: need smooth
+      viewportElement.scrollTop += top;
+
+      if (type === 'block') {
+        const { draggingArea } = state;
+        if (draggingArea) {
+          draggingArea.end.y += top;
+          selection.updateDraggingArea(draggingArea);
+        }
+      }
     }
 
     // trigger native scroll
   };
 
-  // See https://developer.mozilla.org/en-US/docs/Web/API/Window/resize_event
-  // May need optimization
-  // private _onResize = (_: Event) => {
-  //   this.selection.refreshSelectedBlocksRects();
-  // };
-
   private _onScroll = (e: Event) => {
-    const { selection, viewportState } = this;
-    const { type } = selection.state;
+    assertExists(this.selection);
+    const { selection } = this;
+    const { type, viewport } = selection.state;
     const { scrollLeft, scrollTop } = e.target as Element;
-    viewportState.scrollLeft = scrollLeft;
-    viewportState.scrollTop = scrollTop;
+    viewport.scrollLeft = scrollLeft;
+    viewport.scrollTop = scrollTop;
+
     if (type === 'block') {
-      selection.refreshSelectionRectAndSelecting(viewportState);
-      // Why? Clicling on the image and the `type` is set to `block`.
-      // See _onContainerClick
-      selection.refresEmbedRects();
-    } else if (type === 'native') {
-      const { startRange, rangePoint } = selection.state;
-      if (startRange && rangePoint) {
-        // Create a synthetic `mousemove` MouseEvent
-        const evt = new MouseEvent('mousemove', {
-          // bubbles: false,
-          // cancelable: false,
-          clientX: rangePoint.x,
-          clientY: rangePoint.y,
-        });
-        this.mouseRoot.dispatchEvent(evt);
-      }
+      selection.refreshDraggingArea(selection.state.viewportOffset);
       return;
     }
-  };
 
-  update(changedProperties: Map<string, unknown>) {
-    if (changedProperties.has('mouseRoot') && changedProperties.has('page')) {
-      this.selection = new DefaultSelectionManager({
-        page: this.page,
-        mouseRoot: this.mouseRoot,
-        signals: this.signals,
-        container: this,
-        threshold: SCROLL_THRESHOLD / 2, // 50
+    let point;
+
+    if (type === 'native') {
+      point = selection.state.startRange && selection.state.lastPoint;
+    } else if (type === 'block:drag') {
+      point = selection.state.lastPoint;
+    }
+
+    if (point) {
+      // Create a synthetic `pointermove` PointerEvent
+      const evt = new PointerEvent('pointermove', {
+        clientX: point.x,
+        clientY: point.y,
       });
+      document.dispatchEvent(evt);
     }
-
-    this._tryUpdateMetaTitle();
-    super.update(changedProperties);
-  }
-
-  // happens on undo/redo (model update)
-  private _tryUpdateMetaTitle() {
-    const { _title } = this;
-    if (!_title || _title.value === undefined) {
-      return;
-    }
-
-    const { page } = this;
-    if (_title.value !== page.meta.title) {
-      page.workspace.setPageMeta(page.id, { title: this._title.value });
-    }
-  }
-
-  private _handleCompositionStart = () => {
-    this.isCompositionStart = true;
   };
 
-  private _handleCompositionEnd = () => {
-    this.isCompositionStart = false;
-  };
-
-  // Fixes: https://github.com/toeverything/blocksuite/issues/200
-  // We shouldn't prevent user input, because there could have CN/JP/KR... input,
-  //  that have pop-up for selecting local characters.
-  // So we could just hook on the keydown event and detect whether user input a new character.
-  private _handleNativeKeydown = (e: KeyboardEvent) => {
-    if (isControlledKeyboardEvent(e)) {
-      return;
-    }
-    // Only the length of character buttons is 1
-    if (
-      (e.key.length === 1 || e.key === 'Enter') &&
-      window.getSelection()?.type === 'Range'
-    ) {
-      const range = getCurrentRange();
-      if (isMultiBlockRange(range)) {
-        deleteModelsByRange(this.page);
+  override updated(changedProperties: Map<string, unknown>) {
+    if (changedProperties.has('model')) {
+      if (this.model && !this._titleVEditor) {
+        this._initTitleVEditor();
       }
-      window.removeEventListener('keydown', this._handleNativeKeydown);
-    } else if (window.getSelection()?.type !== 'Range') {
-      // remove, user don't have native selection
-      window.removeEventListener('keydown', this._handleNativeKeydown);
     }
-  };
+  }
 
   private _initDragHandle = () => {
     const createHandle = () => {
       this.components.dragHandle = createDragHandle(this);
-      this.components.dragHandle.getDropAllowedBlocks = draggingBlock => {
+      this.components.dragHandle.getDropAllowedBlocks = draggingBlockIds => {
         if (
-          draggingBlock &&
-          Utils.doesInsideBlockByFlavour(
+          draggingBlockIds &&
+          draggingBlockIds.length === 1 &&
+          Utils.isInsideBlockByFlavour(
             this.page,
-            draggingBlock,
+            draggingBlockIds[0],
             'affine:database'
           )
         ) {
           return getAllowSelectedBlocks(
-            this.page.getParent(draggingBlock) as BaseBlockModel
+            this.page.getParent(draggingBlockIds[0]) as BaseBlockModel
           );
         }
-        return getAllowSelectedBlocks(this.model);
+
+        if (!draggingBlockIds || draggingBlockIds.length === 1) {
+          return getAllowSelectedBlocks(this.model);
+        } else {
+          return getAllowSelectedBlocks(this.model).filter(block => {
+            return !draggingBlockIds?.includes(block.id);
+          });
+        }
       };
     };
     if (
@@ -431,7 +409,7 @@ export class DefaultPageBlockComponent
       createHandle();
     }
     this._disposables.add(
-      this.page.awarenessStore.signals.update.subscribe(
+      this.page.awarenessStore.slots.update.subscribe(
         msg => msg.state?.flags.enable_drag_handle,
         enable => {
           if (enable) {
@@ -450,166 +428,151 @@ export class DefaultPageBlockComponent
     );
   };
 
-  updateViewportState() {
-    const viewport = this.defaultViewportElement;
-    const { scrollLeft, scrollTop, scrollHeight, clientHeight, clientWidth } =
-      viewport;
-    const { top, left } = viewport.getBoundingClientRect();
-    this.viewportState = {
-      top,
-      left,
-      scrollTop,
-      scrollLeft,
-      scrollHeight,
-      clientHeight,
-      clientWidth,
-    };
+  private _initSlotEffects() {
+    const { slots } = this;
+
+    this._disposables.add(
+      slots.draggingAreaUpdated.on(rect => {
+        this._draggingArea = rect;
+      })
+    );
+    this._disposables.add(
+      slots.selectedRectsUpdated.on(rects => {
+        this._selectedRects = rects;
+      })
+    );
+    this._disposables.add(
+      this.model.childrenUpdated.on(() => this.requestUpdate())
+    );
   }
 
-  firstUpdated() {
-    autosize(this._title);
-
-    bindHotkeys(this.page, this.selection, this.signals);
-
-    hotkey.enableHotkey();
-    this.model.propsUpdated.on(() => {
-      if (this.model.title !== this._title.value) {
-        this._title.value = this.model.title || '';
-        this.requestUpdate();
-        autosize.update(this._title);
-      }
-    });
-
-    this.signals.updateFrameSelectionRect.on(rect => {
-      this.frameSelectionRect = rect;
-      this.requestUpdate();
-    });
-    this.signals.updateSelectedRects.on(rects => {
-      this.selectedRects = rects;
-      this.requestUpdate();
-    });
-    this.signals.updateEmbedRects.on(rects => {
-      this.selectEmbedRects = rects;
-      this.requestUpdate();
-    });
-    this.signals.updateEmbedEditingState.on(embedEditingState => {
-      this.embedEditingState = embedEditingState;
-      this.requestUpdate();
-    });
-    this.signals.updateCodeBlockOption.on(codeBlockOption => {
-      this.codeBlockOption = codeBlockOption;
-      this.requestUpdate();
-    });
-
-    this.signals.nativeSelection.on(bind => {
-      if (bind) {
-        window.addEventListener('keydown', this._handleNativeKeydown);
-      } else {
-        window.removeEventListener('keydown', this._handleNativeKeydown);
-      }
-    });
-
-    tryUpdateFrameSize(this.page, 1);
+  private _initNoteSizeEffect() {
+    tryUpdateNoteSize(this.page, 1);
     this.addEventListener('keydown', e => {
       if (e.ctrlKey || e.metaKey || e.shiftKey) return;
-      tryUpdateFrameSize(this.page, 1);
+      tryUpdateNoteSize(this.page, 1);
     });
+  }
 
+  private _initResizeEffect() {
     const resizeObserver = new ResizeObserver(
       (entries: ResizeObserverEntry[]) => {
         for (const { target } of entries) {
-          if (target === this.defaultViewportElement) {
-            this.updateViewportState();
-            this.selection.refreshSelectedBlocksRects();
+          if (target === this.viewportElement) {
+            this.selection?.updateViewport();
+            this.selection?.updateRects();
             break;
           }
         }
       }
     );
-    resizeObserver.observe(this.defaultViewportElement);
-    this.components.resizeObserver = resizeObserver;
-
-    this.defaultViewportElement.addEventListener('wheel', this._onWheel);
-    this.defaultViewportElement.addEventListener('scroll', this._onScroll);
-    // window.addEventListener('resize', this._onResize);
-    window.addEventListener('compositionstart', this._handleCompositionStart);
-    window.addEventListener('compositionend', this._handleCompositionEnd);
-
-    this.setAttribute(BLOCK_ID_ATTR, this.model.id);
-    focusTextEnd(this._title);
+    resizeObserver.observe(this.viewportElement);
+    this._resizeObserver = resizeObserver;
   }
 
-  private _disposables = new DisposableGroup();
+  override firstUpdated() {
+    const { page, selection } = this;
+    const scope = hotkey.newScope(HOTKEY_SCOPE_TYPE.AFFINE_PAGE);
+    if (activeEditorManager.isActive(this)) {
+      hotkey.setScope(scope);
+    }
+    this._disposables.add(
+      activeEditorManager.activeSlot.on(() => {
+        if (activeEditorManager.isActive(this)) {
+          hotkey.setScope(scope);
+        }
+      })
+    );
+    this._disposables.add(() => hotkey.deleteScope(scope));
+    hotkey.withScope(scope, () => {
+      assertExists(selection);
+      bindHotkeys(page, selection);
+    });
+    hotkey.enableHotkey();
+
+    this._initDragHandle();
+    this._initSlotEffects();
+    this._initNoteSizeEffect();
+    this._initResizeEffect();
+
+    this.mouseRoot.addEventListener('wheel', this._onWheel);
+    this.viewportElement.addEventListener('scroll', this._onScroll);
+
+    this.setAttribute(BLOCK_ID_ATTR, this.model.id);
+  }
 
   override connectedCallback() {
     super.connectedCallback();
-    this._initDragHandle();
+    registerService('affine:page', PageBlockService);
+    this.clipboard.init(this.page);
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    this.mouseRoot = this.parentElement!;
+    this.service?.mountSelectionManager(this, this.slots);
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    this.clipboard.dispose();
     this._disposables.dispose();
     this.components.dragHandle?.remove();
 
     removeHotkeys();
-    this.selection.clear();
-    this.selection.dispose();
-    if (this.components.resizeObserver) {
-      this.components.resizeObserver.disconnect();
-      this.components.resizeObserver = null;
+    this.service?.unmountSelectionManager();
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
     }
-    this.defaultViewportElement.removeEventListener('wheel', this._onWheel);
-    this.defaultViewportElement.removeEventListener('scroll', this._onScroll);
-    // window.removeEventListener('resize', this._onResize);
-    window.removeEventListener(
-      'compositionstart',
-      this._handleCompositionStart
-    );
-    window.removeEventListener('compositionend', this._handleCompositionEnd);
+    this.mouseRoot.removeEventListener('wheel', this._onWheel);
+    this.viewportElement.removeEventListener('scroll', this._onScroll);
+    this._disposables.dispose();
   }
 
-  render() {
-    const { readonly } = this;
+  override render() {
+    requestAnimationFrame(() => {
+      this.service?.selection?.refreshRemoteSelection();
+    });
 
-    const childrenContainer = BlockChildrenContainer(this.model, this, () =>
-      this.requestUpdate()
-    );
-    const selectionRect = FrameSelectionRect(this.frameSelectionRect);
-    const selectedRectsContainer = SelectedRectsContainer(
-      this.selectedRects,
-      this.viewportState
-    );
-    const selectedEmbedContainer = EmbedSelectedRectsContainer(
-      this.selectEmbedRects,
-      this.viewportState
-    );
-    const embedEditingContainer = EmbedEditingContainer(
-      readonly ? null : this.embedEditingState,
-      this.signals
-    );
-    const codeBlockOptionContainer = CodeBlockOptionContainer(
-      readonly ? null : this.codeBlockOption
-    );
+    const { selection } = this;
+    const viewportOffset = selection?.state.viewportOffset;
+
+    const draggingArea = DraggingArea(this._draggingArea);
+    const isEmpty =
+      (!this.model.title || !this.model.title.length) && !this._isComposing;
+
+    const content = html`${repeat(
+      this.model?.children.filter(
+        child => !(matchFlavours(child, ['affine:note']) && child.hidden)
+      ),
+      child => child.id,
+      child => this.root.renderModel(child)
+    )}`;
 
     return html`
       <div class="affine-default-viewport">
         <div class="affine-default-page-block-container">
-          ${selectedRectsContainer}
           <div class="affine-default-page-block-title-container">
-            <textarea
-              ?disabled=${this.readonly}
-              .value=${this.model.title}
-              placeholder="Title"
+            <div
               data-block-is-title="true"
-              class="affine-default-page-block-title"
-              @keydown=${this._onTitleKeyDown}
-              @input=${this._onTitleInput}
-            ></textarea>
+              class="affine-default-page-block-title ${isEmpty
+                ? 'affine-default-page-block-title-empty'
+                : ''}"
+            ></div>
+            <affine-page-meta-data
+              .host="${this}"
+              .page="${this.page}"
+            ></affine-page-meta-data>
           </div>
-          ${childrenContainer}
+          ${content}
         </div>
-        ${selectionRect} ${selectedEmbedContainer} ${embedEditingContainer}
-        ${codeBlockOptionContainer}
+        <affine-selected-blocks
+          .mouseRoot="${this.mouseRoot}"
+          .state="${{
+            rects: this._selectedRects,
+            grab: !draggingArea,
+          }}"
+          .offset="${viewportOffset}"
+        ></affine-selected-blocks>
+        ${this.widgets} ${draggingArea}
       </div>
     `;
   }

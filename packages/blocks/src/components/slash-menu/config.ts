@@ -1,9 +1,13 @@
 import {
+  BookmarkIcon,
   CopyIcon,
+  DatabaseKanbanViewIcon20,
+  DatabaseTableViewIcon20,
   DeleteIcon,
-  DividerIcon,
+  DualLinkIcon,
   DuplicateIcon,
-  ImageIcon,
+  ImageIcon20,
+  NewPageIcon,
   NowIcon,
   paragraphConfig,
   // PasteIcon,
@@ -11,55 +15,34 @@ import {
   TomorrowIcon,
   YesterdayIcon,
 } from '@blocksuite/global/config';
-import type { BaseBlockModel } from '@blocksuite/store';
-import { Page, Text } from '@blocksuite/store';
-import type { TemplateResult } from 'lit';
+import { assertExists, Text } from '@blocksuite/store';
 
+import { REFERENCE_NODE } from '../../__internal__/rich-text/reference-node.js';
+import { getServiceOrRegister } from '../../__internal__/service.js';
+import { restoreSelection } from '../../__internal__/utils/block-range.js';
 import {
-  getCurrentRange,
-  getRichTextByModel,
+  createPage,
+  getCurrentNativeRange,
+  getVirgoByModel,
   resetNativeSelection,
   uploadImageFromLocal,
 } from '../../__internal__/utils/index.js';
+import { clearMarksOnDiscontinuousInput } from '../../__internal__/utils/virgo.js';
+import { getBookmarkInitialProps } from '../../bookmark-block/utils.js';
 import { copyBlock } from '../../page-block/default/utils.js';
-// import { formatConfig } from '../../page-block/utils/const.js';
-import { updateBlockType } from '../../page-block/utils/index.js';
+import { formatConfig } from '../../page-block/utils/format-config.js';
+import {
+  onModelTextUpdated,
+  updateBlockType,
+} from '../../page-block/utils/index.js';
+import { showLinkedPagePopover } from '../linked-page/index.js';
 import { toast } from '../toast.js';
-
-export type SlashItem = {
-  name: string;
-  icon: TemplateResult<1>;
-  divider?: boolean;
-  action: ({ page, model }: { page: Page; model: BaseBlockModel }) => void;
-};
-
-function insertContent(model: BaseBlockModel, text: string) {
-  if (!model.text) {
-    throw new Error("Can't insert text! Text not found");
-  }
-  const richText = getRichTextByModel(model);
-  const quill = richText?.quill;
-  if (!quill) {
-    throw new Error("Can't insert text! Quill not found");
-  }
-  const index = quill.getSelection()?.index || model.text.length;
-  model.text.insert(text, index);
-  // Update the caret to the end of the inserted text
-  quill.setSelection(index + text.length, 0);
-}
-
-const dividerItem: SlashItem = {
-  name: 'Divider',
-  icon: DividerIcon,
-  action({ page, model }) {
-    const parent = page.getParent(model);
-    if (!parent) {
-      return;
-    }
-    const index = parent.children.indexOf(model);
-    page.addBlockByFlavour('affine:divider', {}, parent, index + 1);
-  },
-};
+import {
+  formatDate,
+  insertContent,
+  insideDatabase,
+  type SlashItem,
+} from './utils.js';
 
 export const menuGroups: { name: string; items: SlashItem[] }[] = [
   {
@@ -67,60 +50,165 @@ export const menuGroups: { name: string; items: SlashItem[] }[] = [
     items: [
       ...paragraphConfig
         .filter(i => i.flavour !== 'affine:list')
-        .map<SlashItem>(({ name, icon, flavour, type }) => ({
+        .map<Omit<SlashItem, 'groupName'>>(({ name, icon, flavour, type }) => ({
           name,
           icon,
-          action: ({ model }) => updateBlockType([model], flavour, type),
+          showWhen: model => {
+            if (!model.page.schema.flavourSchemaMap.has(flavour)) {
+              return false;
+            }
+
+            if (['Quote', 'Code Block', 'Divider'].includes(name)) {
+              return !insideDatabase(model);
+            }
+            return true;
+          },
+          action: ({ model }) => {
+            const newModels = updateBlockType([model], flavour, type);
+            // Reset selection if the target is code block
+            if (flavour === 'affine:code') {
+              if (newModels.length !== 1) {
+                throw new Error(
+                  "Failed to reset selection! New model length isn't 1"
+                );
+              }
+              const codeModel = newModels[0];
+              onModelTextUpdated(codeModel, () => {
+                restoreSelection({
+                  type: 'Native',
+                  startOffset: 0,
+                  endOffset: 0,
+                  models: [codeModel],
+                });
+              });
+            }
+          },
         })),
-      dividerItem,
     ],
   },
-  // TODO https://github.com/toeverything/blocksuite/issues/1184
-  // {
-  //   name: 'Style',
-  //   items: formatConfig
-  //     .filter(i => !['Link', 'Code'].includes(i.name))
-  //     .map(({ name, icon, id }, idx) => ({
-  //       name,
-  //       icon,
-  //       divider: idx === 0,
-  //       action: ({ model }) => {
-  //         if (!model.text) {
-  //           return;
-  //         }
-  //         const len = model.text.length;
-  //         model.text.format(0, len, {
-  //           [id]: true,
-  //         });
-  //       },
-  //     })),
-  // },
+  {
+    name: 'Style',
+    items: formatConfig
+      .filter(i => !['Link', 'Code'].includes(i.name))
+      .map(({ name, icon, id }) => ({
+        name,
+        icon,
+        action: ({ model }) => {
+          if (!model.text) {
+            return;
+          }
+          const len = model.text.length;
+          if (!len) {
+            const vEditor = getVirgoByModel(model);
+            assertExists(vEditor, "Can't set style mark! vEditor not found");
+            vEditor.setMarks({
+              [id]: true,
+            });
+            clearMarksOnDiscontinuousInput(vEditor);
+            return;
+          }
+          model.text.format(0, len, {
+            [id]: true,
+          });
+        },
+      })),
+  },
   {
     name: 'List',
     items: paragraphConfig
       .filter(i => i.flavour === 'affine:list')
-      .map(({ name, icon, flavour, type }, idx) => ({
+      .map(({ name, icon, flavour, type }) => ({
         name,
         icon,
-        divider: idx === 0,
+        showWhen: model => {
+          if (!model.page.schema.flavourSchemaMap.has(flavour)) {
+            return false;
+          }
+          return true;
+        },
         action: ({ model }) => updateBlockType([model], flavour, type),
       })),
   },
+
   {
-    name: 'Image & File',
+    name: 'Pages',
+    items: [
+      {
+        name: 'New Page',
+        icon: NewPageIcon,
+        showWhen: model =>
+          !!model.page.awarenessStore.getFlag('enable_linked_page'),
+        action: async ({ page, model }) => {
+          const newPage = await createPage(page.workspace);
+          insertContent(model, REFERENCE_NODE, {
+            reference: { type: 'LinkedPage', pageId: newPage.id },
+          });
+        },
+      },
+      {
+        name: 'Link Page',
+        alias: ['dual link'],
+        icon: DualLinkIcon,
+        showWhen: model =>
+          !!model.page.awarenessStore.getFlag('enable_linked_page'),
+        action: ({ model }) => {
+          insertContent(model, '@');
+          showLinkedPagePopover({ model, range: getCurrentNativeRange() });
+        },
+      },
+    ],
+  },
+  {
+    name: 'Content & Media',
     items: [
       {
         name: 'Image',
-        icon: ImageIcon,
-        divider: true,
+        icon: ImageIcon20,
+        showWhen: model => {
+          if (!model.page.schema.flavourSchemaMap.has('affine:image')) {
+            return false;
+          }
+          if (insideDatabase(model)) {
+            return false;
+          }
+          return true;
+        },
         async action({ page, model }) {
           const parent = page.getParent(model);
           if (!parent) {
             return;
           }
           parent.children.indexOf(model);
-          const props = await uploadImageFromLocal(page);
+          const props = (await uploadImageFromLocal(page.blobs)).map(
+            ({ sourceId }) => ({ flavour: 'affine:image', sourceId })
+          );
           page.addSiblingBlocks(model, props);
+        },
+      },
+      {
+        name: 'Bookmark',
+        icon: BookmarkIcon,
+        showWhen: model => {
+          if (!model.page.awarenessStore.getFlag('enable_bookmark_operation')) {
+            return false;
+          }
+          if (!model.page.schema.flavourSchemaMap.has('affine:image')) {
+            return false;
+          }
+          return !insideDatabase(model);
+        },
+        async action({ page, model }) {
+          const parent = page.getParent(model);
+          if (!parent) {
+            return;
+          }
+          const url = await getBookmarkInitialProps();
+          if (!url) return;
+          const props = {
+            flavour: 'affine:bookmark',
+            url,
+          } as const;
+          page.addSiblingBlocks(model, [props]);
         },
       },
     ],
@@ -131,21 +219,19 @@ export const menuGroups: { name: string; items: SlashItem[] }[] = [
       {
         name: 'Today',
         icon: TodayIcon,
-        divider: true,
         action: ({ model }) => {
           const date = new Date();
-          const strTime = date.toISOString().split('T')[0];
-          insertContent(model, strTime);
+          insertContent(model, formatDate(date));
         },
       },
       {
         name: 'Tomorrow',
         icon: TomorrowIcon,
         action: ({ model }) => {
+          // yyyy-mm-dd
           const date = new Date();
           date.setDate(date.getDate() + 1);
-          const strTime = date.toISOString().split('T')[0];
-          insertContent(model, strTime);
+          insertContent(model, formatDate(date));
         },
       },
       {
@@ -154,8 +240,7 @@ export const menuGroups: { name: string; items: SlashItem[] }[] = [
         action: ({ model }) => {
           const date = new Date();
           date.setDate(date.getDate() - 1);
-          const strTime = date.toISOString().split('T')[0];
-          insertContent(model, strTime);
+          insertContent(model, formatDate(date));
         },
       },
       {
@@ -166,14 +251,71 @@ export const menuGroups: { name: string; items: SlashItem[] }[] = [
           // https://stackoverflow.com/questions/8888491/how-do-you-display-javascript-datetime-in-12-hour-am-pm-format
           const date = new Date();
           let hours = date.getHours();
-          const minutes = date.getMinutes();
+          const minutes = date.getMinutes().toString().padStart(2, '0');
           const amOrPm = hours >= 12 ? 'pm' : 'am';
           hours = hours % 12;
           hours = hours ? hours : 12; // the hour '0' should be '12'
-          const min = minutes < 10 ? '0' + minutes : minutes;
-          const strTime = hours + ':' + min + ' ' + amOrPm;
+          const strTime = hours + ':' + minutes + ' ' + amOrPm;
           insertContent(model, strTime);
         },
+      },
+    ],
+  },
+  {
+    name: 'Database',
+    items: [
+      {
+        name: 'Table View',
+        alias: ['database'],
+        icon: DatabaseTableViewIcon20,
+        showWhen: model => {
+          if (!model.page.awarenessStore.getFlag('enable_database')) {
+            return false;
+          }
+          if (!model.page.schema.flavourSchemaMap.has('affine:database')) {
+            return false;
+          }
+          if (insideDatabase(model)) {
+            // You can't add a database block inside another database block
+            return false;
+          }
+          return true;
+        },
+        action: async ({ page, model }) => {
+          const parent = page.getParent(model);
+          assertExists(parent);
+          const index = parent.children.indexOf(model);
+
+          const id = page.addBlock(
+            'affine:database',
+            {},
+            page.getParent(model),
+            index + 1
+          );
+          const service = await getServiceOrRegister('affine:database');
+          service.initDatabaseBlock(page, model, id, false);
+        },
+      },
+      {
+        name: 'Kanban View',
+        alias: ['database'],
+        disabled: true,
+        icon: DatabaseKanbanViewIcon20,
+        showWhen: model => {
+          if (!model.page.awarenessStore.getFlag('enable_database')) {
+            return false;
+          }
+          if (!model.page.schema.flavourSchemaMap.has('affine:database')) {
+            return false;
+          }
+          if (insideDatabase(model)) {
+            // You can't add a database block inside another database block
+            return false;
+          }
+          return true;
+        },
+        // eslint-disable-next-line @typescript-eslint/no-empty-function
+        action: ({ model }) => {},
       },
     ],
   },
@@ -183,9 +325,8 @@ export const menuGroups: { name: string; items: SlashItem[] }[] = [
       {
         name: 'Copy',
         icon: CopyIcon,
-        divider: true,
         action: async ({ model }) => {
-          const curRange = getCurrentRange();
+          const curRange = getCurrentNativeRange();
           await copyBlock(model);
           resetNativeSelection(curRange);
           toast('Copied to clipboard');
@@ -214,7 +355,7 @@ export const menuGroups: { name: string; items: SlashItem[] }[] = [
           const index = parent.children.indexOf(model);
 
           // TODO add clone model util
-          page.addBlockByFlavour(
+          page.addBlock(
             model.flavour,
             {
               type: model.type,
@@ -236,4 +377,4 @@ export const menuGroups: { name: string; items: SlashItem[] }[] = [
       },
     ],
   },
-];
+] satisfies { name: string; items: SlashItem[] }[];

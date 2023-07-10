@@ -1,73 +1,86 @@
 /* eslint-disable @typescript-eslint/no-restricted-imports */
 // checkout https://vitest.dev/guide/debugging.html for debugging tests
 
-import type { Signal } from '@blocksuite/global/utils';
-import { assert, describe, expect, it } from 'vitest';
+import { EDITOR_WIDTH, WORKSPACE_VERSION } from '@blocksuite/global/config';
+import type { Slot } from '@blocksuite/global/utils';
+import { assert, describe, expect, it, vi } from 'vitest';
+import { Awareness } from 'y-protocols/awareness.js';
+import { applyUpdate, encodeStateAsUpdate } from 'yjs';
 
-import { DividerBlockModelSchema } from '../../../blocks/src/divider-block/divider-model.js';
-import { FrameBlockModelSchema } from '../../../blocks/src/frame-block/frame-model.js';
-import { ListBlockModelSchema } from '../../../blocks/src/list-block/list-model.js';
 // Use manual per-module import/export to support vitest environment on Node.js
-import { PageBlockModelSchema } from '../../../blocks/src/page-block/page-model.js';
-import { ParagraphBlockModelSchema } from '../../../blocks/src/paragraph-block/paragraph-model.js';
-import { BaseBlockModel, Generator, Page, Workspace } from '../index.js';
+import { DividerBlockSchema } from '../../../blocks/src/divider-block/divider-model.js';
+import { ListBlockSchema } from '../../../blocks/src/list-block/list-model.js';
+import { NoteBlockSchema } from '../../../blocks/src/note-block/note-model.js';
+import { PageBlockSchema } from '../../../blocks/src/page-block/page-model.js';
+import { ParagraphBlockSchema } from '../../../blocks/src/paragraph-block/paragraph-model.js';
+import type { BaseBlockModel, Page, PassiveDocProvider } from '../index.js';
+import { Generator, Workspace } from '../index.js';
 import type { PageMeta } from '../workspace/index.js';
-import { assertExists } from './test-utils-dom.js';
+import type { BlockSuiteDoc } from '../yjs';
+import { assertExists } from './test-utils-dom';
 
 function createTestOptions() {
   const idGenerator = Generator.AutoIncrement;
-  return { idGenerator };
+  return { id: 'test-workspace', idGenerator, isSSR: true };
 }
 
-// Create BlockSchema manually
-export const BlockSchema = [
-  ParagraphBlockModelSchema,
-  PageBlockModelSchema,
-  ListBlockModelSchema,
-  FrameBlockModelSchema,
-  DividerBlockModelSchema,
+export const BlockSchemas = [
+  ParagraphBlockSchema,
+  PageBlockSchema,
+  ListBlockSchema,
+  NoteBlockSchema,
+  DividerBlockSchema,
 ];
-
-function serialize(page: Page) {
-  return page.doc.toJSON();
-}
-
-function waitOnce<T>(signal: Signal<T>) {
-  return new Promise<T>(resolve => signal.once(val => resolve(val)));
-}
-
-async function createRoot(page: Page) {
-  queueMicrotask(() => page.addBlockByFlavour('affine:page'));
-  const root = await waitOnce(page.signals.rootAdded);
-  return root;
-}
-
-async function createPage(workspace: Workspace, pageId = 'page0') {
-  queueMicrotask(() => workspace.createPage(pageId));
-  await waitOnce(workspace.signals.pageAdded);
-  const page = workspace.getPage(pageId);
-  assertExists(page);
-  return page;
-}
-
-async function createTestPage() {
-  const options = createTestOptions();
-  const workspace = new Workspace(options).register(BlockSchema);
-  const page = await createPage(workspace);
-  return page;
-}
 
 const defaultPageId = 'page0';
 const spaceId = `space:${defaultPageId}`;
-const spaceMetaId = 'space:meta';
+const spaceMetaId = 'meta';
 
-describe.concurrent('basic', () => {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serializeWorkspace(doc: BlockSuiteDoc): Record<string, any> {
+  const spaces = {};
+  doc.spaces.forEach((subDoc, key) => {
+    spaces[key] = subDoc.toJSON();
+  });
+  const json = doc.toJSON();
+  delete json.spaces;
+
+  return {
+    ...json,
+    spaces,
+  };
+}
+
+function waitOnce<T>(slot: Slot<T>) {
+  return new Promise<T>(resolve => slot.once(val => resolve(val)));
+}
+
+function createRoot(page: Page) {
+  page.addBlock('affine:page');
+  if (!page.root) throw new Error('root not found');
+  return page.root;
+}
+
+async function createTestPage(pageId = defaultPageId) {
+  const options = createTestOptions();
+  const workspace = new Workspace(options).register(BlockSchemas);
+  const page = workspace.createPage({ id: pageId });
+  await page.waitForLoaded();
+  return page;
+}
+
+describe('basic', () => {
   it('can init workspace', async () => {
     const options = createTestOptions();
     const workspace = new Workspace(options);
-    const page = await createPage(workspace);
-    const actual = serialize(page);
+    assert.equal(workspace.isEmpty, true);
+
+    const page = workspace.createPage({ id: 'page0' });
+    await page.waitForLoaded();
+    const actual = serializeWorkspace(workspace.doc);
     const actualPage = actual[spaceMetaId].pages[0] as PageMeta;
+
+    assert.equal(workspace.isEmpty, false);
     assert.equal(typeof actualPage.createDate, 'number');
     // @ts-ignore
     delete actualPage.createDate;
@@ -78,24 +91,115 @@ describe.concurrent('basic', () => {
           {
             id: 'page0',
             title: '',
+            tags: [],
           },
         ],
-        versions: {},
+        workspaceVersion: WORKSPACE_VERSION,
+        blockVersions: {},
       },
-      [spaceId]: {},
+      spaces: {
+        [spaceId]: {
+          blocks: {},
+        },
+      },
     });
+  });
+
+  it('init with provider', async () => {
+    const options = createTestOptions();
+    const workspace = new Workspace({
+      ...options,
+      providerCreators: [
+        vi.fn((id, doc, config): PassiveDocProvider => {
+          expect(id).toBe(options.id);
+          expect(doc.guid).toBe(options.id);
+          expect(config.awareness).toBeInstanceOf(Awareness);
+          return {
+            flavour: '',
+            passive: true,
+            connect() {
+              // do nothing
+            },
+            get connected() {
+              return false;
+            },
+            disconnect() {
+              // do nothing
+            },
+          };
+        }),
+      ],
+    });
+  });
+
+  it('workspace pages with yjs applyUpdate', async () => {
+    const options = createTestOptions();
+    const workspace = new Workspace(options).register(BlockSchemas);
+    const workspace2 = new Workspace(options).register(BlockSchemas);
+    const page = workspace.createPage({
+      id: '0',
+    });
+    await page.waitForLoaded();
+    page.addBlock('affine:page', {
+      title: new page.Text(),
+    });
+    {
+      const fn = vi.fn(({ added }) => {
+        expect(added.size).toBe(1);
+      });
+      // only apply root update
+      workspace2.doc.once('subdocs', fn);
+      expect(fn).toBeCalledTimes(0);
+      expect(workspace2.pages.size).toBe(0);
+      const update = encodeStateAsUpdate(workspace.doc);
+      applyUpdate(workspace2.doc, update);
+      expect(workspace2.doc.toJSON()['spaces']).toEqual({
+        'space:0': {
+          blocks: {},
+        },
+      });
+      expect(workspace2.pages.size).toBe(1);
+      expect(fn).toBeCalledTimes(1);
+    }
+    {
+      // apply page update
+      const update = encodeStateAsUpdate(page.spaceDoc);
+      expect(workspace2.pages.size).toBe(1);
+      const page2 = workspace2.getPage('0');
+      assertExists(page2);
+      applyUpdate(page2.spaceDoc, update);
+      expect(workspace2.doc.toJSON()['spaces']).toEqual({
+        'space:0': {
+          blocks: {
+            '0': {
+              'prop:title': '',
+              'sys:children': [],
+              'sys:flavour': 'affine:page',
+              'sys:id': '0',
+            },
+          },
+        },
+      });
+      const fn = vi.fn(({ loaded }) => {
+        expect(loaded.size).toBe(1);
+      });
+      workspace2.doc.once('subdocs', fn);
+      expect(fn).toBeCalledTimes(0);
+      await page2.waitForLoaded();
+      expect(fn).toBeCalledTimes(1);
+    }
   });
 });
 
-describe.concurrent('addBlock', () => {
+describe('addBlock', () => {
   it('can add single model', async () => {
     const page = await createTestPage();
-    page.addBlockByFlavour('affine:page');
+    page.addBlock('affine:page', {
+      title: new page.Text(),
+    });
 
-    assert.deepEqual(serialize(page)[spaceId], {
+    assert.deepEqual(serializeWorkspace(page.doc).spaces[spaceId].blocks, {
       '0': {
-        'meta:tags': {},
-        'meta:tagSchema': {},
         'prop:title': '',
         'sys:children': [],
         'sys:flavour': 'affine:page',
@@ -106,12 +210,10 @@ describe.concurrent('addBlock', () => {
 
   it('can add model with props', async () => {
     const page = await createTestPage();
-    page.addBlockByFlavour('affine:page', { title: 'hello' });
+    page.addBlock('affine:page', { title: new page.Text('hello') });
 
-    assert.deepEqual(serialize(page)[spaceId], {
+    assert.deepEqual(serializeWorkspace(page.doc).spaces[spaceId].blocks, {
       '0': {
-        'meta:tags': {},
-        'meta:tagSchema': {},
         'sys:children': [],
         'sys:flavour': 'affine:page',
         'sys:id': '0',
@@ -122,102 +224,129 @@ describe.concurrent('addBlock', () => {
 
   it('can add multi models', async () => {
     const page = await createTestPage();
-    page.addBlockByFlavour('affine:page');
-    page.addBlockByFlavour('affine:paragraph');
-    page.addBlocksByFlavour([
-      { flavour: 'affine:paragraph', blockProps: { type: 'h1' } },
-      { flavour: 'affine:paragraph', blockProps: { type: 'h2' } },
-    ]);
+    const pageId = page.addBlock('affine:page', {
+      title: new page.Text(),
+    });
+    const noteId = page.addBlock('affine:note', {}, pageId);
+    page.addBlock('affine:paragraph', {}, noteId);
+    page.addBlocks(
+      [
+        { flavour: 'affine:paragraph', blockProps: { type: 'h1' } },
+        { flavour: 'affine:paragraph', blockProps: { type: 'h2' } },
+      ],
+      noteId
+    );
 
-    assert.deepEqual(serialize(page)[spaceId], {
+    assert.deepEqual(serializeWorkspace(page.doc).spaces[spaceId].blocks, {
       '0': {
-        'meta:tags': {},
-        'meta:tagSchema': {},
-        'sys:children': ['1', '2', '3'],
+        'sys:children': ['1'],
         'sys:flavour': 'affine:page',
         'sys:id': '0',
         'prop:title': '',
       },
       '1': {
-        'sys:children': [],
-        'sys:flavour': 'affine:paragraph',
+        'sys:children': ['2', '3', '4'],
+        'sys:flavour': 'affine:note',
         'sys:id': '1',
-        'prop:text': '',
-        'prop:type': 'text',
+        'prop:background': '--affine-background-secondary-color',
+        'prop:xywh': `[0,0,${EDITOR_WIDTH},480]`,
+        'prop:index': 'a0',
+        'prop:hidden': false,
       },
       '2': {
         'sys:children': [],
         'sys:flavour': 'affine:paragraph',
         'sys:id': '2',
         'prop:text': '',
-        'prop:type': 'h1',
+        'prop:type': 'text',
       },
       '3': {
         'sys:children': [],
         'sys:flavour': 'affine:paragraph',
         'sys:id': '3',
         'prop:text': '',
+        'prop:type': 'h1',
+      },
+      '4': {
+        'sys:children': [],
+        'sys:flavour': 'affine:paragraph',
+        'sys:id': '4',
+        'prop:text': '',
         'prop:type': 'h2',
       },
     });
   });
 
-  it('can observe signal events', async () => {
+  it('can observe slot events', async () => {
     const page = await createTestPage();
 
-    queueMicrotask(() => page.addBlockByFlavour('affine:page'));
-    const block = await waitOnce(page.signals.rootAdded);
-    if (Array.isArray(block)) {
-      throw new Error('');
-    }
+    queueMicrotask(() =>
+      page.addBlock('affine:page', {
+        title: new page.Text(),
+      })
+    );
+    const block = await waitOnce(page.slots.rootAdded);
     assert.equal(block.flavour, 'affine:page');
   });
 
   it('can add block to root', async () => {
     const page = await createTestPage();
 
-    queueMicrotask(() => page.addBlockByFlavour('affine:page'));
-    const roots = await waitOnce(page.signals.rootAdded);
-    const root = Array.isArray(roots) ? roots[0] : roots;
-    if (Array.isArray(root)) {
-      throw new Error('');
-    }
+    let noteId: string;
+
+    queueMicrotask(() => {
+      const pageId = page.addBlock('affine:page');
+      noteId = page.addBlock('affine:note', {}, pageId);
+    });
+    await waitOnce(page.slots.rootAdded);
+    const { root } = page;
+    if (!root) throw new Error('root is null');
+
     assert.equal(root.flavour, 'affine:page');
 
-    page.addBlockByFlavour('affine:paragraph');
-    assert.equal(root.children[0].flavour, 'affine:paragraph');
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    page.addBlock('affine:paragraph', {}, noteId!);
+    assert.equal(root.children[0].flavour, 'affine:note');
+    assert.equal(root.children[0].children[0].flavour, 'affine:paragraph');
     assert.equal(root.childMap.get('1'), 0);
 
-    const serializedChildren = serialize(page)[spaceId]['0']['sys:children'];
+    const serializedChildren = serializeWorkspace(page.doc).spaces[spaceId]
+      .blocks['0']['sys:children'];
     assert.deepEqual(serializedChildren, ['1']);
     assert.equal(root.children[0].id, '1');
   });
 
   it('can add and remove multi pages', async () => {
     const options = createTestOptions();
-    const workspace = new Workspace(options).register(BlockSchema);
+    const workspace = new Workspace(options).register(BlockSchemas);
 
-    const page0 = await createPage(workspace, 'page0');
-    const page1 = await createPage(workspace, 'page1');
-    // @ts-ignore
+    const page0 = workspace.createPage({ id: 'page0' });
+    const page1 = workspace.createPage({ id: 'page1' });
+    await Promise.all([page0.waitForLoaded(), page1.waitForLoaded()]);
+    // @ts-expect-error
     assert.equal(workspace._pages.size, 2);
 
-    page0.addBlockByFlavour('affine:page');
+    page0.addBlock('affine:page', {
+      title: new page0.Text(),
+    });
     workspace.removePage(page0.id);
 
     // @ts-expect-error
     assert.equal(workspace._pages.size, 1);
-    assert.deepEqual(serialize(page0)['space:page0'], {});
+    assert.equal(
+      serializeWorkspace(page0.doc).spaces['space:page0'],
+      undefined
+    );
 
     workspace.removePage(page1.id);
     // @ts-expect-error
     assert.equal(workspace._pages.size, 0);
   });
 
-  it('can set page state', async () => {
+  it('can set page state', () => {
     const options = createTestOptions();
-    const workspace = new Workspace(options).register(BlockSchema);
-    workspace.createPage('page0');
+    const workspace = new Workspace(options).register(BlockSchemas);
+    workspace.createPage({ id: 'page0' });
 
     assert.deepEqual(
       workspace.meta.pageMetas.map(({ id, title }) => ({
@@ -233,12 +362,14 @@ describe.concurrent('addBlock', () => {
     );
 
     let called = false;
-    workspace.meta.pagesUpdated.on(() => {
+    workspace.meta.pageMetasUpdated.on(() => {
       called = true;
     });
 
+    // @ts-ignore
     workspace.setPageMeta('page0', { favorite: true });
     assert.deepEqual(
+      // @ts-ignore
       workspace.meta.pageMetas.map(({ id, title, favorite }) => ({
         id,
         title,
@@ -269,15 +400,15 @@ describe.concurrent('addBlock', () => {
   });
 });
 
-describe.concurrent('deleteBlock', () => {
+describe('deleteBlock', () => {
   it('can delete single model', async () => {
     const page = await createTestPage();
 
-    page.addBlockByFlavour('affine:page');
-    assert.deepEqual(serialize(page)[spaceId], {
+    page.addBlock('affine:page', {
+      title: new page.Text(),
+    });
+    assert.deepEqual(serializeWorkspace(page.doc).spaces[spaceId].blocks, {
       '0': {
-        'meta:tags': {},
-        'meta:tagSchema': {},
         'sys:children': [],
         'sys:flavour': 'affine:page',
         'sys:id': '0',
@@ -285,22 +416,48 @@ describe.concurrent('deleteBlock', () => {
       },
     });
 
-    page.deleteBlockById('0');
-    assert.deepEqual(serialize(page)[spaceId], {});
+    page.deleteBlock(page.root as BaseBlockModel);
+    assert.deepEqual(serializeWorkspace(page.doc).spaces[spaceId].blocks, {});
   });
 
   it('can delete model with parent', async () => {
     const page = await createTestPage();
-    const roots = await createRoot(page);
-    const root = Array.isArray(roots) ? roots[0] : roots;
+    const root = createRoot(page);
+    const noteId = page.addBlock('affine:note', {}, root.id);
 
-    page.addBlockByFlavour('affine:paragraph');
+    page.addBlock('affine:paragraph', {}, noteId);
 
     // before delete
-    assert.deepEqual(serialize(page)[spaceId], {
+    assert.deepEqual(serializeWorkspace(page.doc).spaces[spaceId].blocks, {
       '0': {
-        'meta:tags': {},
-        'meta:tagSchema': {},
+        'prop:title': '',
+        'sys:children': ['1'],
+        'sys:flavour': 'affine:page',
+        'sys:id': '0',
+      },
+      '1': {
+        'sys:children': ['2'],
+        'sys:flavour': 'affine:note',
+        'sys:id': '1',
+        'prop:background': '--affine-background-secondary-color',
+        'prop:xywh': `[0,0,${EDITOR_WIDTH},480]`,
+        'prop:index': 'a0',
+        'prop:hidden': false,
+      },
+      '2': {
+        'sys:children': [],
+        'sys:flavour': 'affine:paragraph',
+        'sys:id': '2',
+        'prop:text': '',
+        'prop:type': 'text',
+      },
+    });
+
+    page.deleteBlock(root.children[0].children[0]);
+
+    // after delete
+    assert.deepEqual(serializeWorkspace(page.doc).spaces[spaceId].blocks, {
+      '0': {
         'prop:title': '',
         'sys:children': ['1'],
         'sys:flavour': 'affine:page',
@@ -308,42 +465,30 @@ describe.concurrent('deleteBlock', () => {
       },
       '1': {
         'sys:children': [],
-        'sys:flavour': 'affine:paragraph',
+        'sys:flavour': 'affine:note',
         'sys:id': '1',
-        'prop:text': '',
-        'prop:type': 'text',
+        'prop:background': '--affine-background-secondary-color',
+        'prop:xywh': `[0,0,${EDITOR_WIDTH},480]`,
+        'prop:index': 'a0',
+        'prop:hidden': false,
       },
     });
-
-    page.deleteBlock(root.children[0]);
-
-    // after delete
-    assert.deepEqual(serialize(page)[spaceId], {
-      '0': {
-        'meta:tags': {},
-        'meta:tagSchema': {},
-        'prop:title': '',
-        'sys:children': [],
-        'sys:flavour': 'affine:page',
-        'sys:id': '0',
-      },
-    });
-    assert.equal(root.children.length, 0);
+    assert.equal(root.children.length, 1);
   });
 });
 
-describe.concurrent('getBlock', () => {
+describe('getBlock', () => {
   it('can get block by id', async () => {
     const page = await createTestPage();
-    const roots = await createRoot(page);
-    const root = Array.isArray(roots) ? roots[0] : roots;
+    const root = createRoot(page);
+    const noteId = page.addBlock('affine:note', {}, root.id);
 
-    page.addBlockByFlavour('affine:paragraph');
-    page.addBlockByFlavour('affine:paragraph');
+    page.addBlock('affine:paragraph', {}, noteId);
+    page.addBlock('affine:paragraph', {}, noteId);
 
-    const text = page.getBlockById('2') as BaseBlockModel;
+    const text = page.getBlockById('3') as BaseBlockModel;
     assert.equal(text.flavour, 'affine:paragraph');
-    assert.equal(root.children.indexOf(text), 1);
+    assert.equal(root.children[0].children.indexOf(text), 1);
 
     const invalid = page.getBlockById('😅');
     assert.equal(invalid, null);
@@ -351,43 +496,47 @@ describe.concurrent('getBlock', () => {
 
   it('can get parent', async () => {
     const page = await createTestPage();
-    const roots = await createRoot(page);
-    const root = Array.isArray(roots) ? roots[0] : roots;
+    const root = createRoot(page);
+    const noteId = page.addBlock('affine:note', {}, root.id);
 
-    page.addBlockByFlavour('affine:paragraph');
-    page.addBlockByFlavour('affine:paragraph');
+    page.addBlock('affine:paragraph', {}, noteId);
+    page.addBlock('affine:paragraph', {}, noteId);
 
-    const result = page.getParent(root.children[1]) as BaseBlockModel;
-    assert.equal(result, root);
+    const result = page.getParent(
+      root.children[0].children[1]
+    ) as BaseBlockModel;
+    assert.equal(result, root.children[0]);
 
-    const invalid = page.getParentById(root.id, root);
+    const invalid = page.getParent(root);
     assert.equal(invalid, null);
   });
 
   it('can get previous sibling', async () => {
     const page = await createTestPage();
-    const roots = await createRoot(page);
-    const root = Array.isArray(roots) ? roots[0] : roots;
+    const root = createRoot(page);
+    const noteId = page.addBlock('affine:note', {}, root.id);
 
-    page.addBlockByFlavour('affine:paragraph');
-    page.addBlockByFlavour('affine:paragraph');
+    page.addBlock('affine:paragraph', {}, noteId);
+    page.addBlock('affine:paragraph', {}, noteId);
 
-    const result = page.getPreviousSibling(root.children[1]) as BaseBlockModel;
-    assert.equal(result, root.children[0]);
+    const result = page.getPreviousSibling(
+      root.children[0].children[1]
+    ) as BaseBlockModel;
+    assert.equal(result, root.children[0].children[0]);
 
-    const invalid = page.getPreviousSibling(root.children[0]);
+    const invalid = page.getPreviousSibling(root.children[0].children[0]);
     assert.equal(invalid, null);
   });
 });
 
 // Inline snapshot is not supported under describe.parallel config
-describe('workspace.exportJSX works', async () => {
-  it('workspace matches snapshot', async () => {
+describe('workspace.exportJSX works', () => {
+  it('workspace matches snapshot', () => {
     const options = createTestOptions();
-    const workspace = new Workspace(options).register(BlockSchema);
-    const page = await createPage(workspace);
+    const workspace = new Workspace(options).register(BlockSchemas);
+    const page = workspace.createPage({ id: 'page0' });
 
-    page.addBlockByFlavour('affine:page', { title: 'hello' });
+    page.addBlock('affine:page', { title: new page.Text('hello') });
 
     expect(workspace.exportJSX()).toMatchInlineSnapshot(`
       <affine:page
@@ -396,62 +545,62 @@ describe('workspace.exportJSX works', async () => {
     `);
   });
 
-  it('empty workspace matches snapshot', async () => {
+  it('empty workspace matches snapshot', () => {
     const options = createTestOptions();
-    const workspace = new Workspace(options).register(BlockSchema);
-    await createPage(workspace);
+    const workspace = new Workspace(options).register(BlockSchemas);
+    workspace.createPage({ id: 'page0' });
 
     expect(workspace.exportJSX()).toMatchInlineSnapshot('null');
   });
 
   it('workspace with multiple blocks children matches snapshot', async () => {
     const options = createTestOptions();
-    const workspace = new Workspace(options).register(BlockSchema);
-    const page = await createPage(workspace);
+    const workspace = new Workspace(options).register(BlockSchemas);
+    const page = workspace.createPage({ id: 'page0' });
+    await page.waitForLoaded();
 
-    page.addBlockByFlavour('affine:page');
-    page.addBlockByFlavour('affine:paragraph');
-    page.addBlockByFlavour('affine:paragraph');
+    const pageId = page.addBlock('affine:page', {
+      title: new page.Text(),
+    });
+    const noteId = page.addBlock('affine:note', {}, pageId);
+    page.addBlock('affine:paragraph', {}, noteId);
+    page.addBlock('affine:paragraph', {}, noteId);
 
     expect(workspace.exportJSX()).toMatchInlineSnapshot(/* xml */ `
-      <affine:page
-        prop:title=""
-      >
-        <affine:paragraph
-          prop:type="text"
-        />
-        <affine:paragraph
-          prop:type="text"
-        />
+      <affine:page>
+        <affine:note
+          prop:background="--affine-background-secondary-color"
+          prop:hidden={false}
+          prop:index="a0"
+        >
+          <affine:paragraph
+            prop:type="text"
+          />
+          <affine:paragraph
+            prop:type="text"
+          />
+        </affine:note>
       </affine:page>
     `);
   });
 });
 
-describe.concurrent('workspace.search works', async () => {
-  it('workspace search matching', async () => {
+describe('workspace search', () => {
+  it('search page meta title', async () => {
     const options = createTestOptions();
-    const workspace = new Workspace(options).register(BlockSchema);
-    const page = await createPage(workspace);
-
-    page.addBlockByFlavour('affine:page', { title: 'hello' });
-
-    page.addBlockByFlavour('affine:paragraph', {
-      text: new page.Text(
-        '英特尔第13代酷睿i7-1370P移动处理器现身Geekbench，14核心和5GHz'
-      ),
+    const workspace = new Workspace(options).register(BlockSchemas);
+    const page = workspace.createPage({ id: 'page0' });
+    await page.waitForLoaded();
+    const pageId = page.addBlock('affine:page', {
+      title: new page.Text('test123'),
     });
-
-    page.addBlockByFlavour('affine:paragraph', {
-      text: new page.Text(
-        '索尼考虑移植《GT赛车7》，又一PlayStation独占IP登陆PC平台'
-      ),
-    });
-
-    const id = page.id.replace('space:', '');
-
-    expect(workspace.search('处理器')).toStrictEqual(new Map([['1', id]]));
-
-    expect(workspace.search('索尼')).toStrictEqual(new Map([['2', id]]));
+    const noteId = page.addBlock('affine:note', {}, pageId);
+    page.addBlock('affine:paragraph', {}, noteId);
+    const result = workspace.search('test');
+    expect(result).toMatchInlineSnapshot(`
+      Map {
+        "0" => "space:page0",
+      }
+    `);
   });
 });

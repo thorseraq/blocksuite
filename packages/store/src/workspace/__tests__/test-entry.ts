@@ -17,7 +17,7 @@ async function testBasic() {
   testSerial('can create page', async () => {
     i++;
     const id = `${i}`;
-    workspace.createPage(id);
+    workspace.createPage({ id: id });
     workspace.setPageMeta(id, { title: 'hello' });
     await nextFrame();
 
@@ -29,7 +29,7 @@ async function testBasic() {
   await runOnce();
 }
 
-const workspace = new Workspace({});
+const workspace = new Workspace({ id: 'test' });
 window.workspace = workspace;
 
 const app = document.createElement('test-app') as TestApp;

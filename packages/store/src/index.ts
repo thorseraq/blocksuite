@@ -1,12 +1,22 @@
 /// <reference types="@blocksuite/global" />
+// eslint-disable-next-line @typescript-eslint/triple-slash-reference
+/// <reference path="../shim.d.ts" />
 export * from './awareness.js';
 export * from './base.js';
-export * from './persistence/blob/index.js';
-export * from './persistence/doc/index.js';
+export { createIndexeddbStorage } from './persistence/blob/indexeddb-storage.js';
+export { createMemoryStorage } from './persistence/blob/memory-storage.js';
+export { createSimpleServerStorage } from './persistence/blob/mock-server-storage.js';
+export type {
+  BlobManager,
+  BlobStorage,
+  BlobStorageCRUD,
+} from './persistence/blob/types.js';
+export * from './providers/type.js';
 export * from './space.js';
 export * from './store.js';
 export * from './text-adapter.js';
 export type { IdGenerator } from './utils/id-generator.js';
+export type { Y };
 export {
   createAutoIncrementIdGenerator,
   createAutoIncrementIdGeneratorByClientId,
@@ -16,6 +26,10 @@ export {
 export * as Utils from './utils/utils.js';
 export * from './workspace/index.js';
 export * from '@blocksuite/global/utils';
+
+import './utils/formatter.js';
+
+import type * as Y from 'yjs';
 
 const env =
   typeof globalThis !== 'undefined'

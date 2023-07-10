@@ -1,36 +1,18 @@
-import { ALLOW_DEFAULT, PREVENT_DEFAULT } from '@blocksuite/global/config';
-import { assertExists, matchFlavours } from '@blocksuite/global/utils';
-import type { BaseBlockModel, Page } from '@blocksuite/store';
-import type { Quill, RangeStatic } from 'quill';
+import { ALLOW_DEFAULT, IS_IOS, IS_MAC } from '@blocksuite/global/config';
+import { matchFlavours } from '@blocksuite/global/utils';
+import type { BaseBlockModel } from '@blocksuite/store';
+import type { VRange } from '@blocksuite/virgo';
 
-import { showSlashMenu } from '../../components/slash-menu/index.js';
-import {
-  getCurrentRange,
-  getNextBlock,
-  isCollapsedAtBlockStart,
-  isMultiBlockRange,
-  noop,
-} from '../utils/index.js';
+import { showLinkedPagePopover } from '../../components/linked-page/index.js';
+import { getService } from '../service.js';
+import { getCurrentNativeRange, hasNativeSelection } from '../utils/index.js';
 import { createBracketAutoCompleteBindings } from './bracket-complete.js';
-import { markdownConvert } from './markdown-convert.js';
-import {
-  handleBlockEndEnter,
-  handleBlockSplit,
-  handleIndent,
-  handleKeyDown,
-  handleKeyUp,
-  handleLineStartBackspace,
-  handleSoftEnter,
-  handleUnindent,
-  tryMatchSpaceHotkey,
-} from './rich-text-operations.js';
+import type { AffineVEditor } from './virgo/types.js';
 
 // Type definitions is ported from quill
 // https://github.com/quilljs/quill/blob/6159f6480482dde0530920dc41033ebc6611a9e7/modules/keyboard.ts#L15-L46
 
-type QuillRange = RangeStatic;
-
-interface BindingContext {
+export interface BindingContext {
   collapsed: boolean;
   empty: boolean;
   offset: number;
@@ -40,7 +22,7 @@ interface BindingContext {
   event: KeyboardEvent;
 }
 
-type KeyboardBinding = {
+export type KeyboardBinding = {
   /**
    * See https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_key_values
    */
@@ -56,313 +38,71 @@ type KeyboardBinding = {
   ctrlKey?: boolean | null;
 };
 
+type KeyboardBindingHandler = (
+  this: KeyboardEventThis,
+  range: VRange,
+  context: BindingContext
+) => boolean;
+
 export type KeyboardBindings = Record<string, KeyboardBinding>;
 
 interface KeyboardEventThis {
-  quill: Quill;
+  vEditor: AffineVEditor;
   options: {
     bindings: KeyboardBindings;
   };
 }
 
-type KeyboardBindingHandler = (
-  this: KeyboardEventThis,
-  range: RangeStatic,
-  context: BindingContext
-) => boolean;
+export function createKeyboardBindings(
+  model: BaseBlockModel,
+  vEditor: AffineVEditor
+): KeyboardBindings {
+  const page = model.page;
 
-function isAtBlockEnd(quill: Quill) {
-  return quill.getLength() - 1 === quill.getSelection(true)?.index;
-}
-
-// If a block is soft enterable, the rule is:
-// 1. In the end of block, first press Enter will insert a \n to break the line, second press Enter will insert a new block
-// 2. In the middle and start of block, press Enter will insert a \n to break the line
-// TODO this should be configurable per-block
-function isSoftEnterable(model: BaseBlockModel) {
-  if (matchFlavours(model, ['affine:code'])) return true;
-  if (matchFlavours(model, ['affine:paragraph'])) {
-    return model.type === 'quote';
-  }
-  return false;
-}
-
-export function createKeyboardBindings(page: Page, model: BaseBlockModel) {
-  function enterMarkdownMatch(
-    this: KeyboardEventThis,
-    range: QuillRange,
-    context: BindingContext
-  ) {
-    const { prefix } = context;
-    markdownConvert(this.quill, model, prefix);
-    return ALLOW_DEFAULT;
-  }
-
-  function spaceMarkdownMatch(
-    this: KeyboardEventThis,
-    range: QuillRange,
-    context: BindingContext
-  ) {
-    const { prefix } = context;
-    return markdownConvert(this.quill, model, prefix)
-      ? PREVENT_DEFAULT
-      : ALLOW_DEFAULT;
-  }
-
-  function hardEnter(quill: Quill, shortKey = false) {
-    const isEnd = isAtBlockEnd(quill);
-    const parent = page.getParent(model);
-    const isLastChild = parent?.lastChild() === model;
-    const isEmptyList =
-      matchFlavours(model, ['affine:list']) && model.text?.length === 0;
-    const selection = quill.getSelection();
-    assertExists(selection);
-
-    if (
-      isEmptyList &&
-      parent &&
-      matchFlavours(parent, ['affine:frame']) &&
-      model.children.length === 0
-    ) {
-      handleLineStartBackspace(page, model);
-    } else if (isEmptyList && isLastChild) {
-      // Before
-      // - line1
-      //   - ↩ <-- press Enter
-      //
-      // After
-      // - line1
-      // - | <-- will unindent the block
-      handleUnindent(page, model, selection.index);
-    } else if (isEnd || shortKey) {
-      const softEnterable = isSoftEnterable(model);
-
-      const isNewLine = /\n\n$/.test(quill.getText());
-      const shouldSoftEnter = softEnterable && !isNewLine;
-
-      if (shouldSoftEnter) {
-        // TODO handle ctrl+enter in code/quote block or other force soft enter block
-        onSoftEnter(quill);
-      } else {
-        // delete the \n at the end of block
-        if (softEnterable) {
-          quill.deleteText(selection.index, 1);
-        }
-        handleBlockEndEnter(page, model);
-      }
-    } else {
-      const isSoftEnterBlock = isSoftEnterable(model);
-
-      if (isSoftEnterBlock) {
-        onSoftEnter(quill);
-      } else {
-        handleBlockSplit(page, model, selection.index, selection.length);
-      }
-    }
-
-    return PREVENT_DEFAULT;
-  }
-
-  function onSoftEnter(quill: Quill) {
-    const selection = quill.getSelection();
-    assertExists(selection);
-    handleSoftEnter(page, model, selection.index, selection.length);
-    quill.setSelection(selection.index + 1, 0);
-    return PREVENT_DEFAULT;
-  }
-
-  function onIndent(this: KeyboardEventThis) {
-    const index = this.quill.getSelection()?.index;
-    handleIndent(page, model, index);
-    return PREVENT_DEFAULT;
-  }
-
-  function onUnindent(this: KeyboardEventThis) {
-    const index = this.quill.getSelection()?.index;
-    handleUnindent(page, model, index);
-    return PREVENT_DEFAULT;
-  }
-
-  function onKeyLeft(this: KeyboardEventThis, range: QuillRange) {
-    // range.length === 0 means collapsed selection, if have range length, the cursor is in the start of text
-    if (range.index === 0 && range.length === 0) {
-      return PREVENT_DEFAULT;
-    }
-
-    return ALLOW_DEFAULT;
-  }
-
-  function onKeyRight(this: KeyboardEventThis, range: QuillRange) {
-    const textLength = this.quill.getText().length;
-    if (range.index + 1 === textLength) {
-      const nextBlock = getNextBlock(model);
-      if (!nextBlock) {
-        return ALLOW_DEFAULT;
-      }
-      return PREVENT_DEFAULT;
-    }
-    return ALLOW_DEFAULT;
-  }
-
-  function onSpace(
-    this: KeyboardEventThis,
-    range: QuillRange,
-    context: BindingContext
-  ) {
-    const { quill } = this;
-    const { prefix } = context;
-    return tryMatchSpaceHotkey(page, model, quill, prefix, range);
-  }
-
-  function onBackspace(this: KeyboardEventThis) {
-    // To workaround uncontrolled behavior when deleting character at block start,
-    // in this case backspace should be handled in quill.
-    if (isCollapsedAtBlockStart(this.quill)) {
-      // window.requestAnimationFrame(() => {
-      handleLineStartBackspace(page, model);
-      // });
-      return PREVENT_DEFAULT;
-    } else if (isMultiBlockRange(getCurrentRange())) {
-      // return PREVENT_DEFAULT;
-      noop();
-    }
-    return ALLOW_DEFAULT;
-  }
+  const service = getService(model.flavour);
+  const blockKeyBinding = service.defineKeymap(model, vEditor);
 
   const keyboardBindings: KeyboardBindings = {
-    // Note: Since Quill’s default handlers are added at initialization,
-    // the only way to prevent them is to add yours in the configuration.
-    // See https://quilljs.com/docs/modules/keyboard/#configuration
-    // The defaultOptions can found at https://github.com/quilljs/quill/blob/6159f6480482dde0530920dc41033ebc6611a9e7/modules/keyboard.ts#L334-L607
-    'code exit': {
-      key: 'Enter',
-      // override default quill behavior
-      handler: () => ALLOW_DEFAULT,
-    },
-    bold: {
-      key: 'b',
-      shortKey: true,
-      handler: () => ALLOW_DEFAULT,
-    },
-    italic: {
-      key: 'i',
-      shortKey: true,
-      handler: () => ALLOW_DEFAULT,
-    },
-    underline: {
-      key: 'u',
-      shortKey: true,
-      handler: () => ALLOW_DEFAULT,
-    },
+    ...blockKeyBinding,
 
-    enterMarkdownMatch: {
-      key: 'Enter',
-      handler: enterMarkdownMatch,
-    },
-    hardEnter: {
-      key: 'Enter',
-      handler() {
-        return hardEnter(this.quill);
-      },
-    },
-    softEnter: {
-      key: 'Enter',
-      shiftKey: true,
-      handler() {
-        return onSoftEnter(this.quill);
-      },
-    },
-    // shortKey+enter
-    insertLineAfter: {
-      key: 'Enter',
-      shortKey: true,
-      handler() {
-        return hardEnter(this.quill, true);
-      },
-    },
-    tab: {
-      key: 'Tab',
-      handler: onIndent,
-    },
-    shiftTab: {
-      key: 'Tab',
-      shiftKey: true,
-      handler: onUnindent,
-    },
-    spaceMarkdownMatch: {
-      key: ' ',
-      handler: spaceMarkdownMatch,
-    },
-    // https://github.com/quilljs/quill/blob/v1.3.7/modules/keyboard.js#L249-L282
-    'list autofill': {
-      key: ' ',
+    linkedPage: {
+      key: ['[', '【', '@'],
+      altKey: null,
       shiftKey: null,
-      prefix: /^(\d+\.|-|\*|\[ ?\]|\[x\]|(#){1,6}|(-){3}|(\*){3}|>)$/,
-      handler: onSpace,
-    },
-    backspace: {
-      key: 'Backspace',
-      handler: onBackspace,
-    },
-    up: {
-      key: 'ArrowUp',
-      shiftKey: false,
-      handler(
-        this: KeyboardEventThis,
-        range: QuillRange,
-        context: BindingContext
-      ) {
-        return handleKeyUp(context.event, this.quill.root);
-      },
-    },
-    down: {
-      key: 'ArrowDown',
-      shiftKey: false,
-      handler(
-        this: KeyboardEventThis,
-        range: QuillRange,
-        context: BindingContext
-      ) {
-        return handleKeyDown(context.event, this.quill.root);
-      },
-    },
-    left: {
-      key: 'ArrowLeft',
-      shiftKey: false,
-      handler: onKeyLeft,
-    },
-    right: {
-      key: 'ArrowRight',
-      shiftKey: false,
-      handler: onKeyRight,
-    },
-
-    slash: {
-      key: [
-        '/',
-        // Compatible with CJK IME
-        '、',
-      ],
-      // prefix non digit or empty string
-      // see https://stackoverflow.com/questions/19127384/what-is-a-regex-to-match-only-an-empty-string
-      // prefix: /[^\d]$|^(?![\s\S])/,
-      handler(range, context) {
-        // TODO remove feature flag after slash menu is stable
-        const flag = page.awarenessStore.getFlag('enable_slash_menu');
-        if (!flag) {
+      handler(range, { event, prefix }) {
+        if (range.length > 0) {
+          // When select text and press `[[` should not trigger transform,
+          // since it will break the bracket complete.
+          // Expected `[[selected text]]` instead of `@selected text]]`
           return ALLOW_DEFAULT;
         }
-        // End of feature flag
-
+        if (
+          (event.key === '[' || event.key === '【') &&
+          !prefix.endsWith(event.key)
+        ) {
+          // not end with `[[` or `【【`
+          return ALLOW_DEFAULT;
+        }
+        const flag = page.awarenessStore.getFlag('enable_linked_page');
+        if (!flag) return ALLOW_DEFAULT;
         if (matchFlavours(model, ['affine:code'])) {
           return ALLOW_DEFAULT;
         }
-        // if (context.format['code'] === true) {
-        //   return ALLOW_DEFAULT;
-        // }
-        requestAnimationFrame(() => {
-          const curRange = getCurrentRange();
-          showSlashMenu({ model, range: curRange });
+
+        this.vEditor.slots.rangeUpdated.once(() => {
+          if (event.key === '[' || event.key === '【') {
+            // Convert to `@`
+            this.vEditor.deleteText({ index: range.index - 1, length: 2 });
+            this.vEditor.insertText({ index: range.index - 1, length: 0 }, '@');
+            this.vEditor.setVRange({ index: range.index, length: 0 });
+            this.vEditor.slots.rangeUpdated.once(() => {
+              const curRange = getCurrentNativeRange();
+              showLinkedPagePopover({ model, range: curRange });
+            });
+            return;
+          }
+          const curRange = getCurrentNativeRange();
+          showLinkedPagePopover({ model, range: curRange });
         });
         return ALLOW_DEFAULT;
       },
@@ -371,4 +111,138 @@ export function createKeyboardBindings(page: Page, model: BaseBlockModel) {
   };
 
   return keyboardBindings;
+}
+
+const SHORT_KEY_PROPERTY = IS_IOS || IS_MAC ? 'metaKey' : 'ctrlKey';
+
+export function createKeyDownHandler(
+  vEditor: AffineVEditor,
+  bindings: KeyboardBindings,
+  model: BaseBlockModel
+): (evt: KeyboardEvent) => void {
+  const bindingStore: Record<string, KeyboardBinding[]> = {};
+  function normalize(binding: KeyboardBinding): KeyboardBinding {
+    if (binding.shortKey) {
+      binding[SHORT_KEY_PROPERTY] = binding.shortKey;
+      delete binding.shortKey;
+    }
+    return binding;
+  }
+
+  function match(evt: KeyboardEvent, binding: KeyboardBinding) {
+    if (
+      (['altKey', 'ctrlKey', 'metaKey', 'shiftKey'] as const).some(key => {
+        return !!binding[key] !== evt[key] && binding[key] !== null;
+      })
+    ) {
+      return false;
+    }
+    return binding.key === evt.key || binding.key === evt.which;
+  }
+
+  function addBinding(keyBinding: KeyboardBinding) {
+    const binding = normalize(keyBinding);
+    const keys = Array.isArray(binding.key) ? binding.key : [binding.key];
+    keys.forEach(key => {
+      const singleBinding = {
+        ...binding,
+        key,
+      };
+      bindingStore[key] = bindingStore[key] ?? [];
+      bindingStore[key].push(singleBinding);
+    });
+  }
+
+  Object.values(bindings).forEach(binding => {
+    addBinding(binding);
+  });
+
+  function keyDownHandler(evt: KeyboardEvent) {
+    const parentModel = model.page.getParent(model);
+    const previousModel = model.page.getPreviousSibling(model);
+    if (
+      (parentModel && matchFlavours(parentModel, ['affine:database'])) ||
+      (previousModel && matchFlavours(previousModel, ['affine:database']))
+    ) {
+      if (evt.key === 'Tab') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        return;
+      }
+    }
+
+    if (evt.defaultPrevented || evt.isComposing) return;
+    const keyBindings = (bindingStore[evt.key] || []).concat(
+      bindingStore[evt.which] || []
+    );
+    const matches = keyBindings.filter(binding => match(evt, binding));
+    if (matches.length === 0) return;
+
+    const vRange = vEditor.getVRange();
+    if (!vRange) return;
+
+    // edgeless mode
+    if (!hasNativeSelection()) return;
+    // if it is multi block selection, we should not handle the keydown event
+    const range = getCurrentNativeRange();
+    if (!range) return;
+    if (
+      !vEditor.rootElement.contains(range.startContainer) ||
+      !vEditor.rootElement.contains(range.endContainer)
+    ) {
+      return;
+    }
+
+    const [line, offset] = vEditor.getLine(vRange.index);
+    const [leafStart, offsetStart] = vEditor.getTextPoint(vRange.index);
+    const [leafEnd, offsetEnd] =
+      vRange.length === 0
+        ? [leafStart, offsetStart]
+        : vEditor.getTextPoint(vRange.index + vRange.length);
+    const prefixText = leafStart.textContent
+      ? leafStart.textContent.slice(0, offsetStart)
+      : '';
+    const suffixText = leafEnd.textContent
+      ? leafEnd.textContent.slice(offsetEnd)
+      : '';
+    const curContext = {
+      collapsed: vRange.length === 0,
+      empty: vRange.length === 0 && line.textLength <= 1,
+      format: vEditor.getFormat(vRange),
+      line,
+      offset,
+      prefix: prefixText,
+      suffix: suffixText,
+      event: evt,
+    };
+    const prevented = matches.some(binding => {
+      if (
+        binding.collapsed != null &&
+        binding.collapsed !== curContext.collapsed
+      ) {
+        return false;
+      }
+      if (binding.prefix != null && !binding.prefix.test(curContext.prefix)) {
+        return false;
+      }
+      if (binding.suffix != null && !binding.suffix.test(curContext.suffix)) {
+        return false;
+      }
+      return !binding.handler.call(
+        {
+          vEditor,
+          options: {
+            bindings,
+          },
+        },
+        vRange,
+        curContext
+      );
+    });
+    if (prevented) {
+      evt.preventDefault();
+    }
+  }
+
+  return keyDownHandler;
 }

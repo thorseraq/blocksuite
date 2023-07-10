@@ -1,18 +1,16 @@
 /// <reference types="vite/client" />
-import { BLOCK_ID_ATTR } from '@blocksuite/global/config';
+import { BLOCK_CHILDREN_CONTAINER_PADDING_LEFT } from '@blocksuite/global/config';
+import { BlockElement } from '@blocksuite/lit';
 import { css, html } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement } from 'lit/decorators.js';
 
-import {
-  BlockChildrenContainer,
-  BlockHost,
-  NonShadowLitElement,
-} from '../__internal__/index.js';
+import { registerService } from '../__internal__/service.js';
 import type { DividerBlockModel } from './divider-model.js';
+import { DividerBlockService } from './divider-service.js';
 
 @customElement('affine-divider')
-export class DividerBlockComponent extends NonShadowLitElement {
-  static styles = css`
+export class DividerBlockComponent extends BlockElement<DividerBlockModel> {
+  static override styles = css`
     .affine-divider-block-container {
       width: 100%;
       height: 20px;
@@ -27,29 +25,28 @@ export class DividerBlockComponent extends NonShadowLitElement {
     }
   `;
 
-  @property({ hasChanged: () => true })
-  model!: DividerBlockModel;
+  override connectedCallback() {
+    super.connectedCallback();
+    registerService('affine:divider', DividerBlockService);
+  }
 
-  @property()
-  host!: BlockHost;
-
-  firstUpdated() {
+  override firstUpdated() {
     this.model.propsUpdated.on(() => this.requestUpdate());
     this.model.childrenUpdated.on(() => this.requestUpdate());
   }
 
-  render() {
-    this.setAttribute(BLOCK_ID_ATTR, this.model.id);
-    const childrenContainer = BlockChildrenContainer(
-      this.model,
-      this.host,
-      () => this.requestUpdate()
-    );
+  override render() {
+    const children = html`<div
+      class="affine-block-children-container"
+      style="padding-left: ${BLOCK_CHILDREN_CONTAINER_PADDING_LEFT}px"
+    >
+      ${this.content}
+    </div>`;
 
     return html`
       <div class=${`affine-divider-block-container`}>
         <hr />
-        ${childrenContainer}
+        ${children}
       </div>
     `;
   }

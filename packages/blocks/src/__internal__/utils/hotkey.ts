@@ -1,24 +1,33 @@
 import type { KeyHandler } from 'hotkeys-js';
 import hotkeys from 'hotkeys-js';
 
-import { isCaptionElement, isInsideRichText, isTitleElement } from './query.js';
+import {
+  isCaptionElement,
+  isDatabaseCell,
+  isDatabaseInput,
+  isInsideDatabaseTitle,
+  isInsideEdgelessTextEditor,
+  isInsidePageTitle,
+  isInsideRichText,
+} from './query.js';
 
 hotkeys.filter = (event: KeyboardEvent) => {
-  if (shouldFilterHotKey(event)) {
-    return false;
-  }
+  if (shouldFilterHotkey(event)) return false;
   return true;
 };
 
 function isUndoRedo(event: KeyboardEvent) {
   // If undo or redo: when event.shiftKey is false => undo, when event.shiftKey is true => redo
-  if (event.metaKey && !event.altKey && event.key === 'z') {
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === 'z') {
     return true;
   }
   return false;
 }
 
-function shouldFilterHotKey(event: KeyboardEvent) {
+/**
+ * Return `true` if the event should be ignore.
+ */
+function shouldFilterHotkey(event: KeyboardEvent) {
   const target = event.target;
   // Not sure if this is the right thing to do
   if (!target) {
@@ -38,13 +47,27 @@ function shouldFilterHotKey(event: KeyboardEvent) {
       return false;
     }
     // undo/redo should work in page title
-    if (isTitleElement(event.target) && isUndoRedo(event)) {
-      event.preventDefault();
+    if (isInsidePageTitle(event.target) && isUndoRedo(event)) {
+      return false;
+    }
+    if (isDatabaseCell(event.target)) {
+      return false;
+    }
+    // undo/redo should work in database title or cell container
+    if (
+      (isInsideDatabaseTitle(event.target) || isDatabaseInput(event.target)) &&
+      isUndoRedo(event)
+    ) {
+      return false;
+    }
+    // undo/redo should work in edgeless text editor
+    if (isInsideEdgelessTextEditor(event.target) && isUndoRedo(event)) {
       return false;
     }
     // Some event dispatch from body
     // for example, press backspace to remove block-level selection
     if (event.target === document.body) {
+      // TODO filter arrow key
       return false;
     }
     return true;
@@ -58,47 +81,80 @@ function shouldFilterHotKey(event: KeyboardEvent) {
   return false;
 }
 
-const SCOPE = {
+export const HOTKEY_SCOPE_TYPE = {
   AFFINE_PAGE: 'affine:page',
-  OTHER: 'other',
-};
+  AFFINE_EDGELESS: 'affine:edgeless',
+} as const;
+export type HOTKEY_SCOPE_TYPE =
+  (typeof HOTKEY_SCOPE_TYPE)[keyof typeof HOTKEY_SCOPE_TYPE];
+export type HOTKEY_SCOPE =
+  | `affine:page-${number}`
+  | `affine:edgeless-${number}`;
 
-// Singleton
+const HOTKEY_DISABLED_SCOPE = 'hotkey_disabled';
+
+/**
+ * Singleton
+ *
+ * When rendering a page or an edgeless view,
+ * `setScope` is called to set a unique scope for each view.
+ * All hotkeys are then bound to this scope.
+ * When a page or an edgeless view is disconnected,
+ * all hotkeys registered during the view's lifetime are destroyed.
+ */
 class HotkeyManager {
   private readonly _hotkeys: typeof hotkeys;
+  private _scope: string = HOTKEY_DISABLED_SCOPE;
+  private _disabled = false;
+  private counter = 0;
 
   constructor() {
     this._hotkeys = hotkeys;
   }
 
-  private _setScope(scope: string): void {
+  get disabled() {
+    return this._disabled;
+  }
+
+  newScope(type: HOTKEY_SCOPE_TYPE): HOTKEY_SCOPE {
+    return `${type}-${this.counter++}`;
+  }
+
+  setScope(scope: HOTKEY_SCOPE) {
+    this._scope = scope;
     this._hotkeys.setScope(scope);
+  }
+
+  deleteScope(scope: HOTKEY_SCOPE) {
+    this._hotkeys.deleteScope(scope);
   }
 
   addListener(
     hotkey: string,
     listener: KeyHandler,
-    scope: string = SCOPE.AFFINE_PAGE
+    options: {
+      keyup?: boolean;
+      keydown?: boolean;
+    } = {}
   ): void {
-    this._hotkeys(hotkey, { scope }, listener);
+    this._hotkeys(hotkey, { ...options, scope: this._scope }, listener);
   }
 
-  removeListener(
-    hotkey: string | Array<string>,
-    scope: string = SCOPE.AFFINE_PAGE
-  ): void {
+  removeListener(hotkey: string | Array<string>): void {
     this._hotkeys.unbind(
       (Array.isArray(hotkey) ? hotkey : [hotkey]).join(','),
-      scope
+      this._scope
     );
   }
 
   disableHotkey(): void {
-    this._hotkeys.setScope(SCOPE.OTHER);
+    this._disabled = true;
+    this._hotkeys.setScope(HOTKEY_DISABLED_SCOPE);
   }
 
   enableHotkey(): void {
-    this._setScope(SCOPE.AFFINE_PAGE);
+    this._disabled = false;
+    this._hotkeys.setScope(this._scope);
   }
 
   /**
@@ -140,6 +196,16 @@ class HotkeyManager {
       this.withDisabledHotkey<ReturnType<T>>(() =>
         fn(...args)
       ) as ReturnType<T>) as unknown as T;
+  }
+
+  withScope(scope: HOTKEY_SCOPE, fn: () => void) {
+    const pre = this._scope;
+    try {
+      this._scope = scope;
+      fn();
+    } finally {
+      this._scope = pre;
+    }
   }
 }
 

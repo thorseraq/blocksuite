@@ -1,4 +1,3 @@
-import './link-node.js';
+import './affine-link.js';
 
-export { createLink } from './create-link.js';
-export { LinkNodeComponent } from './link-node.js';
+export { AffineLink } from './affine-link.js';

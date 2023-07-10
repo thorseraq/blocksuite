@@ -12,7 +12,7 @@ export async function dragBetweenCoords(
     click?: boolean;
   }
 ) {
-  const steps = options?.steps ?? 1;
+  const steps = options?.steps ?? 20;
   const { x: x1, y: y1 } = from;
   const { x: x2, y: y2 } = to;
   options?.click && (await page.mouse.click(x1, y1));
@@ -25,8 +25,8 @@ export async function dragBetweenCoords(
 
 export async function dragBetweenIndices(
   page: Page,
-  [startRichTextIndex, startQuillIndex]: [number, number],
-  [endRichTextIndex, endQuillIndex]: [number, number],
+  [startRichTextIndex, startVIndex]: [number, number],
+  [endRichTextIndex, endVIndex]: [number, number],
   startCoordOffSet: { x: number; y: number } = { x: 0, y: 0 },
   endCoordOffSet: { x: number; y: number } = { x: 0, y: 0 },
   options?: {
@@ -35,18 +35,22 @@ export async function dragBetweenIndices(
     click?: boolean;
   }
 ) {
+  const finalOptions = {
+    steps: 50,
+    ...(options || {}),
+  };
   const startCoord = await getIndexCoordinate(
     page,
-    [startRichTextIndex, startQuillIndex],
+    [startRichTextIndex, startVIndex],
     startCoordOffSet
   );
   const endCoord = await getIndexCoordinate(
     page,
-    [endRichTextIndex, endQuillIndex],
+    [endRichTextIndex, endVIndex],
     endCoordOffSet
   );
 
-  await dragBetweenCoords(page, startCoord, endCoord, options);
+  await dragBetweenCoords(page, startCoord, endCoord, finalOptions);
 }
 
 export async function dragOverTitle(page: Page) {
@@ -75,11 +79,11 @@ export async function dragEmbedResizeByTopRight(page: Page) {
     const y = bottomRightButtonBound.top;
     return {
       from: { x: bottomRightButtonBound.left + 5, y: y + 5 },
-      to: { x: bottomRightButtonBound.left - 334, y },
+      to: { x: bottomRightButtonBound.left + 5 - 200, y },
     };
   });
   await dragBetweenCoords(page, from, to, {
-    steps: 5,
+    steps: 10,
   });
 }
 
@@ -92,11 +96,11 @@ export async function dragEmbedResizeByTopLeft(page: Page) {
     const y = bottomRightButtonBound.top;
     return {
       from: { x: bottomRightButtonBound.left + 5, y: y + 5 },
-      to: { x: bottomRightButtonBound.left + 344, y },
+      to: { x: bottomRightButtonBound.left + 5 + 200, y },
     };
   });
   await dragBetweenCoords(page, from, to, {
-    steps: 5,
+    steps: 10,
   });
 }
 
@@ -105,7 +109,8 @@ export async function dragHandleFromBlockToBlockBottomById(
   sourceId: string,
   targetId: string,
   bottom = true,
-  offset?: number
+  offset?: number,
+  beforeMouseUp?: () => Promise<void>
 ) {
   const sourceBlock = await page
     .locator(`[data-block-id="${sourceId}"]`)
@@ -124,13 +129,10 @@ export async function dragHandleFromBlockToBlockBottomById(
   if (!handle) {
     throw new Error();
   }
-  await page.mouse.click(
-    handle.x + handle.width / 2,
-    handle.y + handle.height / 2
-  );
   await page.mouse.move(
     handle.x + handle.width / 2,
-    handle.y + handle.height / 2
+    handle.y + handle.height / 2,
+    { steps: 10 }
   );
   await page.mouse.down();
   await page.mouse.move(
@@ -150,6 +152,41 @@ export async function dragHandleFromBlockToBlockBottomById(
       }
     );
   }
+
+  if (beforeMouseUp) {
+    await beforeMouseUp();
+  }
+
+  await page.mouse.up();
+}
+
+export async function dragBlockToPoint(
+  page: Page,
+  sourceId: string,
+  point: { x: number; y: number }
+) {
+  const sourceBlock = await page
+    .locator(`[data-block-id="${sourceId}"]`)
+    .boundingBox();
+  if (!sourceBlock) {
+    throw new Error();
+  }
+  await page.mouse.move(
+    sourceBlock.x + sourceBlock.width / 2,
+    sourceBlock.y + sourceBlock.height / 2
+  );
+  const handle = await page.locator('affine-drag-handle').boundingBox();
+  if (!handle) {
+    throw new Error();
+  }
+  await page.mouse.move(
+    handle.x + handle.width / 2,
+    handle.y + handle.height / 2
+  );
+  await page.mouse.down();
+  await page.mouse.move(point.x, point.y, {
+    steps: 50,
+  });
 
   await page.mouse.up();
 }

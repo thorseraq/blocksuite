@@ -1,13 +1,20 @@
-import { html, LitElement, PropertyValues } from 'lit';
+import { html, LitElement, type PropertyValues } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 
-import type { PageMeta, Workspace } from '../workspace.js';
+import type { PageMeta } from '../meta.js';
+import type { Workspace } from '../workspace.js';
+
+declare module '../../workspace/meta.js' {
+  interface PageMeta {
+    favorite?: boolean;
+  }
+}
 
 @customElement('test-app')
 export class TestApp extends LitElement {
   workspace!: Workspace;
 
-  @property()
+  @property({ attribute: false })
   pages: Pick<PageMeta, 'title' | 'favorite'>[] = [];
 
   @query('input[name="page"]')
@@ -20,15 +27,15 @@ export class TestApp extends LitElement {
 
   private _createPage() {
     const id = `${this.pages.length}`;
-    this.workspace.createPage(id);
+    this.workspace.createPage({ id: id });
     this.workspace.setPageMeta(id, { title: this.input.value });
     this.input.value = '';
   }
 
-  firstUpdated(changedProps: PropertyValues) {
+  override firstUpdated(changedProps: PropertyValues) {
     super.firstUpdated(changedProps);
 
-    this.workspace.signals.pagesUpdated.on(() => {
+    this.workspace.slots.pagesUpdated.on(() => {
       this.pages = this.workspace.meta.pageMetas.map(page => ({
         title: page.title,
         favorite: page.favorite,
@@ -36,10 +43,10 @@ export class TestApp extends LitElement {
       this.requestUpdate();
     });
 
-    this.workspace.signals;
+    this.workspace.slots;
   }
 
-  render() {
+  override render() {
     return html`
       <div>
         <input type="text" name="page" placeholder="add a page" />

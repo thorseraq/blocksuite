@@ -12,12 +12,12 @@
     "declaration": true,
     "declarationMap": true,
     "resolveJsonModule": true,
-    "importsNotUsedAsValues": "error",
-    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
     "esModuleInterop": true,
     "noEmitOnError": true,
     "noUnusedLocals": true,
     "noImplicitReturns": true,
+    "noImplicitOverride": true,
     "skipLibCheck": true,
     "incremental": true,
     "paths": {
@@ -26,15 +26,22 @@
       "@blocksuite/blocks": ["./packages/blocks/src"],
       "@blocksuite/blocks/*": ["./packages/blocks/src/*"],
       "@blocksuite/global/*": ["./packages/global/src/*"],
-      "@blocksuite/react": ["./packages/react/src"],
-      "@blocksuite/react/*": ["./packages/react/src/*"],
       "@blocksuite/store": ["./packages/store/src"],
       "@blocksuite/store/*": ["./packages/store/src/*"],
       "@blocksuite/phasor": ["./packages/phasor/src"],
       "@blocksuite/phasor/*": ["./packages/phasor/src/*"],
       "@blocksuite/virgo": ["./packages/virgo/src"],
       "@blocksuite/virgo/*": ["./packages/virgo/src/*"]
-    }
+    },
+    "plugins": [
+      {
+        "name": "ts-lit-plugin",
+        "strict": true,
+        "rules": {
+          "no-incompatible-type-binding": "off"
+        }
+      }
+    ]
   },
   "files": [],
   "references": [
@@ -51,9 +58,6 @@
       "path": "./packages/store"
     },
     {
-      "path": "./packages/react"
-    },
-    {
       "path": "./packages/phasor"
     },
     {
@@ -65,5 +69,9 @@
     {
       "path": "./tests"
     }
-  ]
+  ],
+  "ts-node": {
+    "esm": true,
+    "experimentalSpecifierResolution": "node"
+  }
 }

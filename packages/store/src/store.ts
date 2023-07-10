@@ -1,12 +1,10 @@
+import { assertExists } from '@blocksuite/global/utils';
 import { merge } from 'merge';
 import { Awareness } from 'y-protocols/awareness.js';
 
-import { AwarenessStore, RawAwarenessState } from './awareness.js';
-import type { BlobOptionsGetter } from './persistence/blob/index.js';
-import type {
-  DocProvider,
-  DocProviderConstructor,
-} from './persistence/doc/index.js';
+import { AwarenessStore, type RawAwarenessState } from './awareness.js';
+import type { BlobStorage } from './persistence/blob/types.js';
+import type { DocProvider, DocProviderCreator } from './providers/type.js';
 import type { Space } from './space.js';
 import type { IdGenerator } from './utils/id-generator.js';
 import {
@@ -58,15 +56,13 @@ export interface SSROptions {
 export interface StoreOptions<
   Flags extends Record<string, unknown> = BlockSuiteFlags
 > extends SSROptions {
-  room?: string;
-  providers?: DocProviderConstructor[];
+  id: string;
+  providerCreators?: DocProviderCreator[];
   awareness?: Awareness<RawAwarenessState<Flags>>;
   idGenerator?: Generator;
   defaultFlags?: Partial<Flags>;
-  blobOptionsGetter?: BlobOptionsGetter;
+  blobStorages?: ((id: string) => BlobStorage)[];
 }
-
-const DEFAULT_ROOM = 'virgo-default';
 
 const flagsPreset = {
   enable_set_remote_flag: true,
@@ -74,31 +70,46 @@ const flagsPreset = {
   enable_block_hub: true,
   enable_surface: true,
   enable_edgeless_toolbar: true,
-  enable_slash_menu: false,
-  enable_database: false,
+  enable_slash_menu: true,
+
+  enable_database: true,
+  enable_database_filter: false,
+  enable_page_tags: false,
+  enable_toggle_block: false,
+  enable_block_selection_format_bar: true,
+  enable_linked_page: false,
+  enable_bookmark_operation: false,
+  enable_note_index: false,
+
+  enable_note_cut: true,
+
   readonly: {},
 } satisfies BlockSuiteFlags;
 
 export class Store {
-  readonly doc = new BlockSuiteDoc();
+  readonly id: string;
+  readonly doc: BlockSuiteDoc;
   readonly providers: DocProvider[] = [];
   readonly spaces = new Map<string, Space>();
   readonly awarenessStore: AwarenessStore;
   readonly idGenerator: IdGenerator;
-  connected = false;
 
   // TODO: The user cursor should be spread by the spaceId in awareness
-  constructor({
-    room = DEFAULT_ROOM,
-    providers = [],
-    awareness,
-    idGenerator,
-    defaultFlags,
-  }: StoreOptions = {}) {
+  constructor(
+    {
+      id,
+      providerCreators = [],
+      awareness,
+      idGenerator,
+      defaultFlags,
+    }: StoreOptions = { id: nanoid() }
+  ) {
+    this.id = id;
+    this.doc = new BlockSuiteDoc({ guid: id });
     this.awarenessStore = new AwarenessStore(
       this,
       awareness ?? new Awareness<RawAwarenessState>(this.doc),
-      merge(flagsPreset, defaultFlags)
+      merge(true, flagsPreset, defaultFlags)
     );
 
     switch (idGenerator) {
@@ -123,24 +134,12 @@ export class Store {
       }
     }
 
-    this.providers = providers.map(
-      ProviderConstructor =>
-        new ProviderConstructor(room, this.doc, {
-          // @ts-expect-error
-          awareness: this.awarenessStore.awareness,
-        })
+    this.providers = providerCreators.map(creator =>
+      creator(id, this.doc, {
+        awareness: this.awarenessStore.awareness,
+      })
     );
   }
-
-  connect = () => {
-    this.providers.forEach(provider => provider.connect?.());
-    this.connected = true;
-  };
-
-  disconnect = () => {
-    this.providers.forEach(provider => provider.disconnect?.());
-    this.connected = false;
-  };
 
   addSpace(space: Space) {
     this.spaces.set(space.prefixedId, space);
@@ -153,14 +152,27 @@ export class Store {
   /**
    * @internal Only for testing, 'page0' should be replaced by props 'spaceId'
    */
-  exportJSX(id = '0') {
-    const json = serializeYDoc(this.doc) as unknown as SerializedStore;
-    if (!('space:page0' in json)) {
-      throw new Error("Failed to convert to JSX: 'space:page0' not found");
+  exportJSX(pageId: string, blockId?: string) {
+    const prefixedPageId = pageId.startsWith('space:')
+      ? pageId
+      : `space:${pageId}`;
+    const doc = this.doc.spaces.get(prefixedPageId);
+    assertExists(doc);
+    const pageJson = serializeYDoc(doc);
+    if (!pageJson) {
+      throw new Error(`Page ${pageId} doesn't exist`);
     }
-    if (!json['space:page0'][id]) {
+    const blockJson = pageJson.blocks as Record<string, unknown>;
+    if (!blockId) {
+      const pageBlockId = Object.keys(blockJson).at(0);
+      if (!pageBlockId) {
+        return null;
+      }
+      blockId = pageBlockId;
+    }
+    if (!blockJson[blockId]) {
       return null;
     }
-    return yDocToJSXNode(json['space:page0'], id);
+    return yDocToJSXNode(blockJson, blockId);
   }
 }

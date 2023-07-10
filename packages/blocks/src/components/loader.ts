@@ -8,23 +8,23 @@ import { customElement, property } from 'lit/decorators.js';
 
 @customElement('loader-element')
 export class Loader extends LitElement {
-  static styles = css`
+  static override styles = css`
     .load-container {
       margin: 10px auto;
-      width: 150px;
+      width: var(--loader-width);
       text-align: center;
     }
 
     .load-container .load {
       width: 8px;
       height: 8px;
-      background-color: var(--affine-code-color);
+      background-color: var(--affine-text-primary-color);
 
       border-radius: 100%;
       display: inline-block;
       -webkit-animation: bouncedelay 1.4s infinite ease-in-out;
       animation: bouncedelay 1.4s infinite ease-in-out;
-      /* Prevent first frame from flickering when animation starts */
+      /* Prevent first note from flickering when animation starts */
       -webkit-animation-fill-mode: both;
       animation-fill-mode: both;
     }
@@ -62,11 +62,14 @@ export class Loader extends LitElement {
     }
   `;
 
-  @property()
+  @property({ attribute: false })
   hostModel: BaseBlockModel | null = null;
 
-  @property()
+  @property({ attribute: false })
   radius: string | number = '8px';
+
+  @property({ attribute: false })
+  width: string | number = '150px';
 
   constructor() {
     super();
@@ -78,6 +81,12 @@ export class Loader extends LitElement {
       this.setAttribute(BLOCK_ID_ATTR, this.hostModel.id);
       this.setAttribute(BLOCK_SERVICE_LOADING_ATTR, 'true');
     }
+
+    const width = this.width;
+    this.style.setProperty(
+      '--loader-width',
+      typeof width === 'string' ? width : `${width}px`
+    );
   }
 
   override render() {

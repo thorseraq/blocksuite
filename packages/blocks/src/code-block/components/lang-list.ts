@@ -1,30 +1,37 @@
-import { BLOCK_ID_ATTR, SearchIcon } from '@blocksuite/global/config';
+import { SearchIcon } from '@blocksuite/global/config';
+import { ShadowlessElement } from '@blocksuite/lit';
 import { css, html } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
-import { styleMap } from 'lit/directives/style-map.js';
+import {
+  BUNDLED_LANGUAGES,
+  type ILanguageRegistration,
+  type Lang,
+} from 'shiki';
 
-import { createEvent, NonShadowLitElement } from '../../__internal__/index.js';
+import { createEvent } from '../../__internal__/index.js';
+import { scrollbarStyle } from '../../components/utils.js';
+import { POPULAR_LANGUAGES_MAP } from '../utils/code-languages.js';
+import { PLAIN_TEXT_REGISTRATION } from '../utils/consts.js';
 
 // TODO extract to a common list component
 @customElement('lang-list')
-export class LangList extends NonShadowLitElement {
-  static get styles() {
+export class LangList extends ShadowlessElement {
+  static override get styles() {
     return css`
       lang-list {
         display: flex;
         flex-direction: column;
         position: absolute;
-        background: var(--affine-popover-background);
-        border-radius: 10px;
+        background: var(--affine-background-overlay-panel-color);
+        border-radius: 12px;
         top: 24px;
         z-index: 1;
       }
 
       .lang-list-container {
-        box-shadow: 4px 4px 7px rgba(58, 76, 92, 0.04),
-          -4px -4px 13px rgba(58, 76, 92, 0.02),
-          6px 6px 36px rgba(58, 76, 92, 0.06);
-        border-radius: 0 10px 10px 10px;
+        box-shadow: var(--affine-menu-shadow);
+        border-radius: 8px;
+        padding: 12px 8px;
       }
 
       .lang-list-button-container {
@@ -35,14 +42,9 @@ export class LangList extends NonShadowLitElement {
         padding-top: 5px;
         padding-left: 4px;
         padding-right: 4px;
-        /*scrollbar-color: #fff0 #fff0;*/
       }
 
-      /*
-      .lang-list-button-container::-webkit-scrollbar {
-        background: none;
-      }
-      */
+      ${scrollbarStyle}
 
       .lang-item {
         display: flex;
@@ -51,15 +53,11 @@ export class LangList extends NonShadowLitElement {
         margin-bottom: 5px;
       }
 
-      code-block-button {
-        font-size: var(--affine-font-sm);
-        text-align: justify;
-        line-height: 22px;
-      }
-
-      code-block-button:hover {
-        color: var(--affine-primary-color);
-        background: var(--affine-hover-background);
+      .input-wrapper {
+        position: relative;
+        display: flex;
+        margin-top: 8px;
+        margin-left: 4px;
       }
 
       #filter-input {
@@ -67,8 +65,8 @@ export class LangList extends NonShadowLitElement {
         align-items: center;
         height: 32px;
         width: 192px;
-        border: 1px solid #d0d7e3;
-        border-radius: 10px;
+        border: 1px solid var(--affine-border-color);
+        border-radius: 8px;
         padding-left: 44px;
         padding-top: 4px;
 
@@ -76,7 +74,7 @@ export class LangList extends NonShadowLitElement {
         font-size: var(--affine-font-sm);
         box-sizing: border-box;
         color: inherit;
-        background: transparent;
+        background: var(--affine-background-overlay-panel-color);
       }
 
       #filter-input:focus {
@@ -84,311 +82,134 @@ export class LangList extends NonShadowLitElement {
       }
 
       #filter-input::placeholder {
-        color: #888a9e;
+        color: var(--affine-placeholder-color);
         font-size: var(--affine-font-sm);
       }
 
       .search-icon {
-        left: 13.65px;
         position: absolute;
-        top: 16px;
+        left: 8px;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        fill: var(--affine-icon-color);
       }
     `;
   }
 
   @state()
-  filterText = '';
+  private _filterText = '';
 
-  @property()
-  id!: string;
-
-  @property()
-  selectedLanguage = '';
-
-  @property()
-  showLangList = 'hidden';
+  @state()
+  private _currentSelectedIndex = 0;
 
   @query('#filter-input')
   filterInput!: HTMLInputElement;
 
-  @state()
-  disposeTimer = 0;
-
-  @property()
+  @property({ attribute: false })
   delay = 150;
 
-  static languages = [
-    'TypeScript',
-    'Rust',
-    'Python',
-    'Java',
-    'C',
-    'CPP',
-    'JavaScript',
-    'PHP',
-    'Go',
-    'Bash',
-    'Swift',
-    'Dart',
-    'Delphi',
-    'XML',
-    '1c',
-    'abnf',
-    'accesslog',
-    'actionscript',
-    'ada',
-    'angelscript',
-    'apache',
-    'applescript',
-    'arcade',
-    'arduino',
-    'armasm',
-    'asciidoc',
-    'aspectj',
-    'autohotkey',
-    'autoit',
-    'avrasm',
-    'awk',
-    'axapta',
-    'basic',
-    'bnf',
-    'brainfuck',
-    'cal',
-    'capnproto',
-    'ceylon',
-    'clean',
-    'clojure',
-    'clojure-repl',
-    'cmake',
-    'coffeescript',
-    'coq',
-    'cos',
-    'crmsh',
-    'crystal',
-    'csharp',
-    'csp',
-    'css',
-    'd',
-    'markdown',
-    'diff',
-    'django',
-    'dns',
-    'dockerfile',
-    'dos',
-    'dsconfig',
-    'dts',
-    'dust',
-    'ebnf',
-    'elixir',
-    'elm',
-    'ruby',
-    'erb',
-    'erlang-repl',
-    'erlang',
-    'excel',
-    'fix',
-    'flix',
-    'fortran',
-    'fsharp',
-    'gams',
-    'gauss',
-    'gcode',
-    'gherkin',
-    'glsl',
-    'gml',
-    'golo',
-    'gradle',
-    'graphql',
-    'groovy',
-    'haml',
-    'handlebars',
-    'haskell',
-    'haxe',
-    'hsp',
-    'http',
-    'hy',
-    'inform7',
-    'ini',
-    'irpf90',
-    'isbl',
-    'jboss-cli',
-    'json',
-    'julia',
-    'julia-repl',
-    'kotlin',
-    'lasso',
-    'latex',
-    'ldif',
-    'leaf',
-    'less',
-    'lisp',
-    'livecodeserver',
-    'livescript',
-    'llvm',
-    'lsl',
-    'lua',
-    'makefile',
-    'mathematica',
-    'matlab',
-    'maxima',
-    'mel',
-    'mercury',
-    'mipsasm',
-    'mizar',
-    'perl',
-    'mojolicious',
-    'monkey',
-    'moonscript',
-    'n1ql',
-    'nestedtext',
-    'nginx',
-    'nim',
-    'nix',
-    'node-repl',
-    'nsis',
-    'objectivec',
-    'ocaml',
-    'openscad',
-    'oxygene',
-    'parser3',
-    'pf',
-    'pgsql',
-    'php-template',
-    'plaintext',
-    'pony',
-    'powershell',
-    'processing',
-    'profile',
-    'prolog',
-    'properties',
-    'protobuf',
-    'puppet',
-    'purebasic',
-    'python-repl',
-    'q',
-    'qml',
-    'r',
-    'reasonml',
-    'rib',
-    'roboconf',
-    'routeros',
-    'rsl',
-    'ruleslanguage',
-    'sas',
-    'scala',
-    'scheme',
-    'scilab',
-    'scss',
-    'shell',
-    'smali',
-    'smalltalk',
-    'sml',
-    'sqf',
-    'sql',
-    'stan',
-    'stata',
-    'step21',
-    'stylus',
-    'subunit',
-    'taggerscript',
-    'yaml',
-    'tap',
-    'tcl',
-    'thrift',
-    'tp',
-    'twig',
-    'vala',
-    'vbnet',
-    'vbscript',
-    'vbscript-html',
-    'verilog',
-    'vhdl',
-    'vim',
-    'wasm',
-    'wren',
-    'x86asm',
-    'xl',
-    'xquery',
-    'zephir',
-  ];
+  override async connectedCallback() {
+    super.connectedCallback();
+    // Avoid triggering click away listener on initial render
+    document.addEventListener('click', this._clickAwayListener);
 
-  protected updated() {
-    if (this.showLangList !== 'hidden') {
-      this.filterInput.focus();
+    setTimeout(() => {
+      this.filterInput?.focus();
+    }, 0);
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    document.removeEventListener('click', this._clickAwayListener);
+  }
+
+  private _clickAwayListener = (e: Event) => {
+    if (this.renderRoot.parentElement?.contains(e.target as Node)) {
+      return;
     }
-  }
-
-  protected firstUpdated() {
-    document.addEventListener('click', (e: MouseEvent) => {
-      this._clickHandler(e);
-    });
-  }
-
-  private _clickHandler(e: MouseEvent) {
-    const target = e.target as HTMLElement;
-    if (
-      !target.closest('.container')?.closest(`[${BLOCK_ID_ATTR}="${this.id}"]`)
-    ) {
-      this._dispose();
-    }
-  }
-
-  private _dispose() {
     this.dispatchEvent(createEvent('dispose', null));
-    document.removeEventListener('click', this._clickHandler);
-    this.filterText = '';
-  }
+  };
 
-  private _onLanguageClicked(language: string) {
-    this.selectedLanguage = language;
+  private _onLanguageClicked(language: ILanguageRegistration | null) {
+    // TODO use slot instead
     this.dispatchEvent(
       createEvent('selected-language-changed', {
-        language: this.selectedLanguage ?? 'JavaScript',
+        language: language?.id ?? null,
       })
     );
-    this._dispose();
   }
 
-  render() {
-    const filteredLanguages = LangList.languages.filter(language => {
-      if (!this.filterText) {
-        return true;
+  override render() {
+    const filteredLanguages = [PLAIN_TEXT_REGISTRATION, ...BUNDLED_LANGUAGES]
+      .filter(language => {
+        if (!this._filterText) {
+          return true;
+        }
+        return (
+          language.id.startsWith(this._filterText.toLowerCase()) ||
+          language.aliases?.some(alias =>
+            alias.startsWith(this._filterText.toLowerCase())
+          )
+        );
+      })
+      .sort(
+        (a, b) =>
+          (POPULAR_LANGUAGES_MAP[a.id as Lang] ?? Infinity) -
+          (POPULAR_LANGUAGES_MAP[b.id as Lang] ?? Infinity)
+      );
+
+    const onLanguageSelect = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this._currentSelectedIndex =
+          (this._currentSelectedIndex + 1) % filteredLanguages.length;
+        // TODO scroll to item
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        this._currentSelectedIndex =
+          (this._currentSelectedIndex + filteredLanguages.length - 1) %
+          filteredLanguages.length;
+        // TODO scroll to item
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (
+          this._currentSelectedIndex === -1 ||
+          this._currentSelectedIndex >= filteredLanguages.length
+        )
+          return;
+
+        this._onLanguageClicked(filteredLanguages[this._currentSelectedIndex]);
       }
-      return language.toLowerCase().startsWith(this.filterText.toLowerCase());
-    });
-
-    if (this.showLangList === 'hidden') {
-      return html``;
-    }
-
-    const styles = styleMap({
-      display: 'flex',
-      'padding-top': '8px',
-      'padding-left': '4px',
-    });
+    };
 
     return html`
       <div class="lang-list-container">
-        <div style="${styles}">
+        <div class="input-wrapper">
           <div class="search-icon">${SearchIcon}</div>
           <input
             id="filter-input"
             type="text"
             placeholder="Search"
-            value=${this.filterText}
-            @keyup=${() => (this.filterText = this.filterInput?.value)}
+            @input="${() => {
+              this._filterText = this.filterInput?.value;
+              this._currentSelectedIndex = 0;
+            }}"
+            @keydown="${onLanguageSelect}"
           />
         </div>
         <div class="lang-list-button-container">
           ${filteredLanguages.map(
-            language => html`
-              <code-block-button
+            (language, index) => html`
+              <icon-button
                 width="100%"
+                height="32px"
                 @click="${() => this._onLanguageClicked(language)}"
                 class="lang-item"
+                ?hover=${index === this._currentSelectedIndex}
               >
-                ${language}
-              </code-block-button>
+                ${language.displayName ?? language.id}
+              </icon-button>
             `
           )}
         </div>
@@ -403,7 +224,10 @@ declare global {
   }
 
   interface HTMLElementEventMap {
-    'selected-language-changed': CustomEvent<{ language: string }>;
+    /**
+     * @deprecated Use slot instead
+     */
+    'selected-language-changed': CustomEvent<{ language: string | null }>;
     dispose: CustomEvent<null>;
   }
 }

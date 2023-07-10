@@ -3,7 +3,7 @@ import { customElement, property } from 'lit/decorators.js';
 
 @customElement('counter-block')
 export class CounterBlock extends LitElement {
-  @property()
+  @property({ attribute: false })
   count: number;
 
   constructor() {
@@ -24,7 +24,7 @@ export class CounterBlock extends LitElement {
     this.dispatchEvent(new CustomEvent('block-count-update', options));
   }
 
-  render() {
+  override render() {
     return html` <div @click=${this._notify}>${this.count}</div> `;
   }
 }

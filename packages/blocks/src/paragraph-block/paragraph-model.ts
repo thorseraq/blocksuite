@@ -1,17 +1,31 @@
-import { defineBlockSchema, SchemaToModel } from '@blocksuite/store';
-import { literal } from 'lit/static-html.js';
+import { defineBlockSchema, type SchemaToModel } from '@blocksuite/store';
 
-export const ParagraphBlockModelSchema = defineBlockSchema(
-  'affine:paragraph',
-  () => ({
+export type ParagraphType =
+  | 'text'
+  | 'quote'
+  | 'h1'
+  | 'h2'
+  | 'h3'
+  | 'h4'
+  | 'h5'
+  | 'h6';
+
+export const ParagraphBlockSchema = defineBlockSchema({
+  flavour: 'affine:paragraph',
+  props: internal => ({
     type: 'text' as ParagraphType,
+    text: internal.Text(),
   }),
-  {
+  metadata: {
     version: 1,
-    tag: literal`affine-paragraph`,
-  }
-);
+    role: 'content',
+    parent: [
+      'affine:note',
+      'affine:database',
+      'affine:paragraph',
+      'affine:list',
+    ],
+  },
+});
 
-export type ParagraphBlockModel = SchemaToModel<
-  typeof ParagraphBlockModelSchema
->;
+export type ParagraphBlockModel = SchemaToModel<typeof ParagraphBlockSchema>;

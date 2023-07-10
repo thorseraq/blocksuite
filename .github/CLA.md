@@ -45,7 +45,39 @@ Example:
 - Yifeng Wang, @doodlewind, 2022/09/11
 -->
 
-- gotjoshua, @gotjoshua, 2023/02/10
 - Innei, @Innei, 2023/02/09
+- gotjoshua, @gotjoshua, 2023/02/10
 - Fangdun Tsai, @fundon, 2023/02/13
 - Zhilin Liu, @lzlme, 2023/02/16
+- zqran, @zqran, 2023/02/17
+- shengxinjing, @shengxinjing, 2023/02/20
+- qinluhe, @qinluhe, 2023/02/21
+- PerfectPan, @PerfectPan, 2023/02/22
+- Alessio Gravili, @AlessioGr, 2023/02/26
+- Sg, @suica, 2023/03/11
+- zhangyi, @hanchayi, 2023/03/16
+- Victor Nanka, @victornanka, 2023/03/21
+- Aditya Sharma, @adityash1, 2023/03/31
+- yuusheng, @yuusheng, 2023/04/04
+- BaoLei, @blurname, 2023/04/08
+- luke358, @luke358, 2023/04/13
+- Skye Sun, @skyesun, 2023/04/14
+- John Faucett, @DataDaoDe, 2023/04/15
+- ZiJian Zuo, @zuozijian3720, 2023/04/21
+- boomyao, @boomyao, 2023/04/26
+- lmmmmmm, @Lmmmmmm-bb, 2023/04/27
+- 三咲智子 Kevin Deng, @sxzz, 2023/04/30
+- Doma, @SevenOutman, 2023/05/05
+- donglixiaoche, @donglixiaoche, 2023/05/06
+- Alkaidcc, @Alkaidcc, 2023/05/12
+- Hritik, @hritikchaudhary, 2023/05/19
+- yuanx, @imyuanx, 2023/05/18
+- Petr Glaser, @pegak, 2023/05/28
+- smallnine9, @smallnine9, 2023/05/28
+- Chen, @donteatfriedrice, 2023/05/28
+- Till, @tillkwl, 2023/06/04
+- Yuexun Jiang, @ahonn, 2023/06/06
+- Hyden Liu, @HydenLiu, 2023/06/11
+- zhengjitf, @zhengjitf, 2023/06/17
+- Yukiniro, @Yukiniro, 2023/07/04
+- AliceLanniste @AliceLanniste 2023/07/10

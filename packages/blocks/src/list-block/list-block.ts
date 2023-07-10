@@ -1,35 +1,28 @@
 /// <reference types="vite/client" />
 import '../__internal__/rich-text/rich-text.js';
 
-import { BLOCK_ID_ATTR } from '@blocksuite/global/config';
-import { css, html } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { BLOCK_CHILDREN_CONTAINER_PADDING_LEFT } from '@blocksuite/global/config';
+import { BlockElement } from '@blocksuite/lit';
+import { assertExists } from '@blocksuite/store';
+import { css, html, nothing } from 'lit';
+import { customElement, state } from 'lit/decorators.js';
 
+import { getPageBlock } from '../__internal__/index.js';
+import { attributeRenderer } from '../__internal__/rich-text/virgo/attribute-renderer.js';
 import {
-  BlockChildrenContainer,
-  BlockHost,
-  getBlockElementByModel,
-  getDefaultPageBlock,
-  NonShadowLitElement,
-} from '../__internal__/index.js';
+  affineTextAttributes,
+  type AffineTextSchema,
+} from '../__internal__/rich-text/virgo/types.js';
+import { registerService } from '../__internal__/service.js';
+import { DefaultPageBlockComponent } from '../index.js';
 import type { ListBlockModel } from './list-model.js';
-import { getListIcon } from './utils/get-list-icon.js';
+import { ListBlockService } from './list-service.js';
+import { ListIcon } from './utils/get-list-icon.js';
 import { getListInfo } from './utils/get-list-info.js';
 
-function selectList(model: ListBlockModel) {
-  const selectionManager = getDefaultPageBlock(model).selection;
-
-  const blockElement = getBlockElementByModel(model);
-  if (!blockElement) {
-    console.error('list block model:', model, 'blockElement:', blockElement);
-    throw new Error('Failed to select list! blockElement not found!');
-  }
-  selectionManager.resetSelectedBlockByRect(blockElement);
-}
-
 @customElement('affine-list')
-export class ListBlockComponent extends NonShadowLitElement {
-  static styles = css`
+export class ListBlockComponent extends BlockElement<ListBlockModel> {
+  static override styles = css`
     .affine-list-block-container {
       box-sizing: border-box;
       border-radius: 5px;
@@ -42,10 +35,11 @@ export class ListBlockComponent extends NonShadowLitElement {
       margin-top: 0;
     }
     .affine-list-block-container.selected {
-      background-color: var(--affine-selected-color);
+      background-color: var(--affine-hover-color);
     }
     .affine-list-rich-text-wrapper {
       display: flex;
+      align-items: center;
     }
     .affine-list-rich-text-wrapper rich-text {
       flex: 1;
@@ -55,18 +49,20 @@ export class ListBlockComponent extends NonShadowLitElement {
       flex-shrink: 0;
       min-width: 26px;
       height: 26px;
-      margin-top: 3px;
       margin-right: 4px;
       display: flex;
       align-items: center;
       justify-content: flex-start;
-      color: var(--affine-code-color);
+      align-self: flex-start;
+      color: var(--affine-list-color);
       font-size: 14px;
       line-height: var(--affine-line-height);
       user-select: none;
+      position: relative;
     }
     .affine-list-block__todo-prefix {
       cursor: pointer;
+      margin-right: 0px;
     }
     .affine-list-block__todo {
       width: 16px;
@@ -81,44 +77,97 @@ export class ListBlockComponent extends NonShadowLitElement {
     .affine-list--checked {
       color: var(--affine-icon-color);
     }
+    .affine-list-block__todo-checked-prefix {
+      width: 20px;
+      height: 20px;
+      position: absolute;
+      left: 0px;
+      border-radius: 50%;
+    }
+    .affine-list--checked .affine-list-block__todo-checked-prefix {
+      animation: sparking 0.6s ease forwards;
+    }
+    @keyframes sparking {
+      0% {
+        width: 14px;
+        height: 14px;
+        left: 3px;
+      }
+      40% {
+        width: 20px;
+        height: 20px;
+        left: 0px;
+        box-shadow: 0 -18px 0 -8px #1e96eb, 16px -8px 0 -8px #1e96eb,
+          16px 8px 0 -8px #1e96eb, 0 18px 0 -8px #1e96eb,
+          -16px 8px 0 -8px #1e96eb, -16px -8px 0 -8px #1e96eb;
+      }
+
+      100% {
+        width: 20px;
+        height: 20px;
+        left: 0px;
+        box-shadow: 0 -36px 0 -10px transparent, 32px -16px 0 -10px transparent,
+          32px 16px 0 -10px transparent, 0 36px 0 -10px transparent,
+          -32px 16px 0 -10px transparent, -32px -16px 0 -10px transparent;
+      }
+    }
   `;
 
-  @property({ hasChanged: () => true })
-  model!: ListBlockModel;
+  @state()
+  showChildren = true;
 
-  @property()
-  host!: BlockHost;
+  readonly textSchema: AffineTextSchema = {
+    attributesSchema: affineTextAttributes,
+    textRenderer: attributeRenderer,
+  };
 
-  firstUpdated() {
+  private _select() {
+    const pageBlock = getPageBlock(this.model);
+    assertExists(pageBlock);
+    if (pageBlock instanceof DefaultPageBlockComponent) {
+      pageBlock.selection?.selectOneBlock(this);
+    }
+  }
+
+  private _onClickIcon = (e: MouseEvent) => {
+    e.stopPropagation();
+
+    if (this.model.type === 'toggle') {
+      this.showChildren = !this.showChildren;
+      return;
+    } else if (this.model.type === 'todo') {
+      this.model.page.captureSync();
+      const checkedPropObj = { checked: !this.model.checked };
+      this.model.page.updateBlock(this.model, checkedPropObj);
+      return;
+    }
+    this._select();
+  };
+
+  override firstUpdated() {
     this.model.propsUpdated.on(() => this.requestUpdate());
     this.model.childrenUpdated.on(() => this.requestUpdate());
   }
 
-  render() {
-    this.setAttribute(BLOCK_ID_ATTR, this.model.id);
-    const { deep, index } = getListInfo(this.host, this.model);
-    const listIcon = getListIcon({
-      model: this.model,
-      deep,
-      index,
-      onClick: () => {
-        if (this.model.type !== 'todo') {
-          selectList(this.model);
-          return;
-        }
-        this.host.page.captureSync();
-        this.host.page.updateBlock(this.model, {
-          checked: !this.model.checked,
-        });
-      },
-    });
-    const childrenContainer = BlockChildrenContainer(
-      this.model,
-      this.host,
-      () => this.requestUpdate()
-    );
+  override connectedCallback() {
+    super.connectedCallback();
+    registerService('affine:list', ListBlockService);
+  }
+
+  override render() {
+    const { deep, index } = getListInfo(this.model);
+    const { model, showChildren, _onClickIcon } = this;
+    const listIcon = ListIcon(model, index, deep, showChildren, _onClickIcon);
+
     // For the first list item, we need to add a margin-top to make it align with the text
     const shouldAddMarginTop = index === 0 && deep === 0;
+
+    const children = html`<div
+      class="affine-block-children-container"
+      style="padding-left: ${BLOCK_CHILDREN_CONTAINER_PADDING_LEFT}px"
+    >
+      ${this.content}
+    </div>`;
 
     return html`
       <div
@@ -132,9 +181,12 @@ export class ListBlockComponent extends NonShadowLitElement {
           }`}
         >
           ${listIcon}
-          <rich-text .host=${this.host} .model=${this.model}></rich-text>
+          <rich-text
+            .model=${this.model}
+            .textSchema=${this.textSchema}
+          ></rich-text>
         </div>
-        ${childrenContainer}
+        ${this.showChildren ? children : nothing}
       </div>
     `;
   }

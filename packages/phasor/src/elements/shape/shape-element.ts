@@ -1,72 +1,93 @@
-import { isPointIn } from '../../utils/hit-utils.js';
-import { deserializeXYWH, serializeXYWH } from '../../utils/xywh.js';
-import { BaseElement, HitTestOptions } from '../base-element.js';
-import { getRectanglePath } from './rect-utils.js';
-import { DashStyle, ShapeStyles, SizeStyle } from './shape-style.js';
+import { DEFAULT_ROUGHNESS } from '../../consts.js';
+import type { RoughCanvas } from '../../rough/canvas.js';
+import type { Bound } from '../../utils/bound.js';
+import type { PointLocation } from '../../utils/point-location.js';
+import type { IVec } from '../../utils/vec.js';
+import { type HitTestOptions, SurfaceElement } from '../surface-element.js';
+import { ShapeMethodsMap } from './shapes/index.js';
+import type { IShape } from './types.js';
 
-export type ShapeType = 'rect' | 'triangle';
-
-export class ShapeElement extends BaseElement {
-  type = 'shape' as const;
-  path: Path2D;
-  shapeType: ShapeType;
-  color: `#${string}` = '#000000';
-  constructor(id: string, shapeType: ShapeType) {
-    super(id);
-    this.shapeType = shapeType;
-
-    const path = new Path2D();
-    this.path = path;
+export class ShapeElement extends SurfaceElement<IShape> {
+  get shapeType() {
+    const shapeType = this.yMap.get('shapeType') as IShape['shapeType'];
+    return shapeType;
   }
 
-  setBound(x: number, y: number, w: number, h: number): void {
-    super.setBound(x, y, w, h);
-
-    // temp workaround
-    if (this.shapeType === 'rect') {
-      const path = new Path2D();
-      path.rect(0, 0, w, h);
-      this.path = path;
-    }
-
-    const shapeStyles: ShapeStyles = {
-      color: this.color,
-      dash: DashStyle.Draw,
-      size: SizeStyle.Small,
-    };
-    const size = [w, h];
-    const path = getRectanglePath(this.id, shapeStyles, size);
-    this.path = path;
+  get radius() {
+    const radius = this.yMap.get('radius') as IShape['radius'];
+    return radius;
   }
 
-  hitTest(x: number, y: number, options?: HitTestOptions) {
-    return isPointIn(this, x, y);
+  get filled() {
+    const filled = this.yMap.get('filled') as IShape['filled'];
+    return filled;
   }
 
-  render(ctx: CanvasRenderingContext2D) {
-    ctx.fillStyle = this.color;
-    ctx.fill(this.path);
+  get fillColor() {
+    const fillColor = this.yMap.get('fillColor') as IShape['fillColor'];
+    return fillColor;
   }
 
-  serialize(): Record<string, unknown> {
-    return {
-      id: this.id,
-      index: this.index,
-      type: this.type,
-      shapeType: this.shapeType,
-      xywh: serializeXYWH(this.x, this.y, this.w, this.h),
-      color: this.color,
-    };
+  get strokeWidth() {
+    const strokeWidth = this.yMap.get('strokeWidth') as IShape['strokeWidth'];
+    return strokeWidth;
   }
 
-  static deserialize(data: Record<string, unknown>): ShapeElement {
-    const shapeType = data.shapeType as ShapeType;
-    const element = new ShapeElement(data.id as string, shapeType);
-    element.index = data.index as string;
+  get strokeColor() {
+    const strokeColor = this.yMap.get('strokeColor') as IShape['strokeColor'];
+    return strokeColor;
+  }
 
-    const [x, y, w, h] = deserializeXYWH(data.xywh as string);
-    element.setBound(x, y, w, h);
-    element.color = data.color as `#${string}`;
-    return element;
+  get strokeStyle() {
+    const strokeStyle = this.yMap.get('strokeStyle') as IShape['strokeStyle'];
+    return strokeStyle;
+  }
+
+  get roughness() {
+    const roughness =
+      (this.yMap.get('roughness') as IShape['roughness']) ?? DEFAULT_ROUGHNESS;
+    return roughness;
+  }
+
+  get realStrokeColor() {
+    return this.computedValue(this.strokeColor);
+  }
+
+  get realFillColor() {
+    return this.computedValue(this.fillColor);
+  }
+
+  override hitTest(x: number, y: number, options: HitTestOptions) {
+    const { hitTest } = ShapeMethodsMap[this.shapeType];
+    options.ignoreTransparent = options.ignoreTransparent ?? true;
+    return hitTest.apply(this, [x, y, options]);
+  }
+
+  override containedByBounds(bounds: Bound) {
+    return ShapeMethodsMap[this.shapeType].containedByBounds(bounds, this);
+  }
+
+  override intersectWithLine(start: IVec, end: IVec) {
+    return ShapeMethodsMap[this.shapeType].intersectWithLine(start, end, this);
+  }
+
+  override getNearestPoint(point: IVec): IVec {
+    return ShapeMethodsMap[this.shapeType].getNearestPoint(point, this);
+  }
+
+  override getRelativePointLocation(point: IVec): PointLocation {
+    return ShapeMethodsMap[this.shapeType].getRelativePointLocation(
+      point,
+      this
+    );
+  }
+
+  override render(
+    ctx: CanvasRenderingContext2D,
+    matrix: DOMMatrix,
+    rc: RoughCanvas
+  ) {
+    const { render } = ShapeMethodsMap[this.shapeType];
+    render(ctx, matrix, rc, this);
   }
 }
